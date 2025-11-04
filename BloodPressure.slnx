@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="BloodPressure/BloodPressure.vcxproj" />
+  <Project Path="BloodPressure/BloodPressure.vcxproj" Id="d5c03c99-eed7-4f82-b62f-1052985fa636" />
 </Solution>

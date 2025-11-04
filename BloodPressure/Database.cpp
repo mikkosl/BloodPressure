@@ -8,6 +8,63 @@ extern "C" {
 #include <iomanip>
 #include <sstream>
 
+static void LogSqliteError(sqlite3* db, const char* where, int rc = 0)
+{
+    if (!db) return;
+    const char* msg = sqlite3_errmsg(db);
+    wchar_t wWhere[128]{};
+    wchar_t wMsg[512]{};
+    MultiByteToWideChar(CP_UTF8, 0, where, -1, wWhere, 128);
+    MultiByteToWideChar(CP_UTF8, 0, msg ? msg : "unknown", -1, wMsg, 512);
+    std::wstring out = L"[SQLite] ";
+    out += wWhere;
+    out += L" (rc=" + std::to_wstring(rc) + L"): ";
+    out += wMsg;
+    out += L"\r\n";
+    OutputDebugStringW(out.c_str());
+}
+
+static int ExecWithRetry(sqlite3* db, const char* sql, const char* where, DWORD totalMs = 8000)
+{
+    DWORD waited = 0;
+    DWORD delay = 50;
+    char* errMsg = nullptr;
+
+    for (;;)
+    {
+        int rc = sqlite3_exec(db, sql, nullptr, nullptr, &errMsg);
+        if (rc == SQLITE_OK) return SQLITE_OK;
+
+        if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED)
+        {
+            if (waited >= totalMs) {
+                if (errMsg) sqlite3_free(errMsg);
+                LogSqliteError(db, where, rc);
+                return rc;
+            }
+            Sleep(delay);
+            waited += delay;
+            if (delay < 800) delay *= 2;
+            if (errMsg) { sqlite3_free(errMsg); errMsg = nullptr; }
+            continue;
+        }
+
+        if (errMsg) sqlite3_free(errMsg);
+        LogSqliteError(db, where, rc);
+        return rc;
+    }
+}
+
+static std::wstring Utf8ToWString(const char* s)
+{
+    if (!s) return {};
+    int needed = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+    if (needed <= 0) return {};
+    std::wstring out(needed - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s, -1, out.data(), needed);
+    return out;
+}
+
 Database::Database(const wchar_t* dbPath)
     : dbPath_(dbPath ? dbPath : L"BloodPressure.db")
 {
@@ -24,18 +81,35 @@ Database::~Database()
 
 bool Database::Initialize()
 {
-    // Open with UTF-16 Windows path support
-    if (sqlite3_open16(dbPath_.c_str(), &db_) != SQLITE_OK)
+    // Convert path to UTF-8 and open with FULLMUTEX for robustness
+    std::string pathUtf8 = WStringToUtf8(dbPath_);
+    int rc = sqlite3_open_v2(
+        pathUtf8.c_str(),
+        &db_,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+        nullptr);
+    if (rc != SQLITE_OK)
     {
+        LogSqliteError(db_, "open_v2", rc);
+        if (db_) { sqlite3_close(db_); db_ = nullptr; }
         return false;
     }
+
+    sqlite3_extended_result_codes(db_, 1);
+    sqlite3_busy_timeout(db_, 5000);
+
+    // Use WAL so readers (DB Browser) don't block writers
+    ExecWithRetry(db_, "PRAGMA journal_mode=WAL;", "PRAGMA journal_mode");
+    ExecWithRetry(db_, "PRAGMA synchronous=NORMAL;", "PRAGMA synchronous");
+    ExecWithRetry(db_, "PRAGMA wal_autocheckpoint=1000;", "PRAGMA wal_autocheckpoint");
+    ExecWithRetry(db_, "PRAGMA temp_store=MEMORY;", "PRAGMA temp_store");
+
     return EnsureSchema();
 }
 
 bool Database::EnsureSchema()
 {
     const char* sql =
-        "PRAGMA journal_mode=WAL;"
         "CREATE TABLE IF NOT EXISTS readings ("
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "  ts_utc TEXT NOT NULL,"
@@ -46,14 +120,8 @@ bool Database::EnsureSchema()
         ");"
         "CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings(ts_utc);";
 
-    char* errMsg = nullptr;
-    int rc = sqlite3_exec(db_, sql, nullptr, nullptr, &errMsg);
-    if (rc != SQLITE_OK)
-    {
-        if (errMsg) sqlite3_free(errMsg);
-        return false;
-    }
-    return true;
+    int rc = ExecWithRetry(db_, sql, "EnsureSchema");
+    return rc == SQLITE_OK;
 }
 
 bool Database::AddReading(int systolic, int diastolic, int pulse, const wchar_t* note)
@@ -65,8 +133,12 @@ bool Database::AddReading(int systolic, int diastolic, int pulse, const wchar_t*
         "VALUES (?, ?, ?, ?, ?);";
 
     sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK)
+    {
+        LogSqliteError(db_, "prepare(insert)", rc);
         return false;
+    }
 
     const std::string ts = UtcNowIso8601();
     sqlite3_bind_text(stmt, 1, ts.c_str(), (int)ts.size(), SQLITE_TRANSIENT);
@@ -85,9 +157,18 @@ bool Database::AddReading(int systolic, int diastolic, int pulse, const wchar_t*
         sqlite3_bind_null(stmt, 5);
     }
 
-    int rc = sqlite3_step(stmt);
+    for (;;)
+    {
+        rc = sqlite3_step(stmt);
+        if (rc == SQLITE_DONE) break;
+        if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) { Sleep(50); continue; }
+        LogSqliteError(db_, "step(insert)", rc);
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
     sqlite3_finalize(stmt);
-    return rc == SQLITE_DONE;
+    return true;
 }
 
 bool Database::GetReadingCount(int& outCount) const
@@ -97,10 +178,14 @@ bool Database::GetReadingCount(int& outCount) const
 
     const char* sql = "SELECT COUNT(*) FROM readings;";
     sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK)
+    {
+        LogSqliteError(db_, "prepare(count)", rc);
         return false;
+    }
 
-    int rc = sqlite3_step(stmt);
+    rc = sqlite3_step(stmt);
     if (rc == SQLITE_ROW)
     {
         outCount = sqlite3_column_int(stmt, 0);
@@ -108,8 +193,52 @@ bool Database::GetReadingCount(int& outCount) const
         return true;
     }
 
+    LogSqliteError(db_, "step(count)", rc);
     sqlite3_finalize(stmt);
     return false;
+}
+
+bool Database::GetRecentReadings(int limit, std::vector<Reading>& out) const
+{
+    out.clear();
+    if (!db_ || limit <= 0) return false;
+
+    const char* sql =
+        "SELECT ts_utc, systolic, diastolic, pulse, COALESCE(note,'') "
+        "FROM readings "
+        "ORDER BY ts_utc DESC "
+        "LIMIT ?;";
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK)
+    {
+        LogSqliteError(db_, "prepare(get recent)", rc);
+        return false;
+    }
+
+    sqlite3_bind_int(stmt, 1, limit);
+
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
+    {
+        Reading r{};
+        r.tsUtc = Utf8ToWString(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+        r.systolic = sqlite3_column_int(stmt, 1);
+        r.diastolic = sqlite3_column_int(stmt, 2);
+        r.pulse = sqlite3_column_int(stmt, 3);
+        r.note = Utf8ToWString(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4)));
+        out.push_back(std::move(r));
+    }
+
+    if (rc != SQLITE_DONE)
+    {
+        LogSqliteError(db_, "step(get recent)", rc);
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
+    sqlite3_finalize(stmt);
+    return true;
 }
 
 std::string Database::WStringToUtf8(const std::wstring& w)
