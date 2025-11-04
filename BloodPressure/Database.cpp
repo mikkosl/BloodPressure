@@ -204,11 +204,10 @@ bool Database::GetRecentReadings(int limit, std::vector<Reading>& out) const
     if (!db_ || limit <= 0) return false;
 
     const char* sql =
-        "SELECT ts_utc, systolic, diastolic, pulse, COALESCE(note,'') "
+        "SELECT id, ts_utc, systolic, diastolic, pulse, COALESCE(note,'') "
         "FROM readings "
         "ORDER BY ts_utc DESC "
         "LIMIT ?;";
-
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK)
@@ -222,17 +221,63 @@ bool Database::GetRecentReadings(int limit, std::vector<Reading>& out) const
     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
     {
         Reading r{};
-        r.tsUtc = Utf8ToWString(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
-        r.systolic = sqlite3_column_int(stmt, 1);
-        r.diastolic = sqlite3_column_int(stmt, 2);
-        r.pulse = sqlite3_column_int(stmt, 3);
-        r.note = Utf8ToWString(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4)));
+        r.id       = sqlite3_column_int(stmt, 0);
+        r.tsUtc    = Utf8ToWString(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)));
+        r.systolic = sqlite3_column_int(stmt, 2);
+        r.diastolic= sqlite3_column_int(stmt, 3);
+        r.pulse    = sqlite3_column_int(stmt, 4);
+        r.note     = Utf8ToWString(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5)));
         out.push_back(std::move(r));
     }
 
     if (rc != SQLITE_DONE)
     {
         LogSqliteError(db_, "step(get recent)", rc);
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+bool Database::UpdateReading(int id, int systolic, int diastolic, int pulse, const wchar_t* note)
+{
+    if (!db_ || id <= 0) return false;
+
+    const char* sql =
+        "UPDATE readings SET systolic=?, diastolic=?, pulse=?, note=? WHERE id=?;";
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK)
+    {
+        LogSqliteError(db_, "prepare(update)", rc);
+        return false;
+    }
+
+    sqlite3_bind_int(stmt, 1, systolic);
+    sqlite3_bind_int(stmt, 2, diastolic);
+    sqlite3_bind_int(stmt, 3, pulse);
+
+    std::string noteUtf8;
+    if (note && *note)
+    {
+        noteUtf8 = WStringToUtf8(std::wstring(note));
+        sqlite3_bind_text(stmt, 4, noteUtf8.c_str(), (int)noteUtf8.size(), SQLITE_TRANSIENT);
+    }
+    else
+    {
+        sqlite3_bind_null(stmt, 4);
+    }
+
+    sqlite3_bind_int(stmt, 5, id);
+
+    for (;;)
+    {
+        rc = sqlite3_step(stmt);
+        if (rc == SQLITE_DONE) break;
+        if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) { Sleep(50); continue; }
+        LogSqliteError(db_, "step(update)", rc);
         sqlite3_finalize(stmt);
         return false;
     }

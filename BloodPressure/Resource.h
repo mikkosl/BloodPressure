@@ -2,7 +2,7 @@
 // Microsoft Visual C++ generated include file.
 // Used by BloodPressure.rc
 
-#define IDS_APP_TITLE			103
+#define IDS_APP_TITLE			101
 
 #define IDR_MAINFRAME			128
 #define IDD_BLOODPRESSURE_DIALOG	102
@@ -10,9 +10,10 @@
 #define IDM_ABOUT				104
 #define IDM_ADD					105
 #define IDM_EXIT				106
-#define IDI_BLOODPRESSURE		107
-#define IDI_SMALL				108
-#define IDC_BLOODPRESSURE		109
+#define IDM_EDITROW				107
+#define IDI_BLOODPRESSURE		108
+#define IDI_SMALL				109
+#define IDC_BLOODPRESSURE		110
 #define IDC_MYICON				2
 #ifndef IDC_STATIC
 #define IDC_STATIC				-1

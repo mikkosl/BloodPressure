@@ -7,6 +7,7 @@ struct sqlite3;
 
 struct Reading
 {
+    int id{};                 // new: primary key for editing
     std::wstring tsUtc;
     int systolic{};
     int diastolic{};
@@ -22,6 +23,7 @@ public:
 
     bool Initialize();
     bool AddReading(int systolic, int diastolic, int pulse, const wchar_t* note);
+    bool UpdateReading(int id, int systolic, int diastolic, int pulse, const wchar_t* note);
     bool GetReadingCount(int& outCount) const;
 
     // New: fetch most recent readings (ordered by timestamp desc)
