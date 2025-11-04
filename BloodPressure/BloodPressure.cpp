@@ -66,7 +66,7 @@ static std::wstring GetDatabasePath()
     return dir + L"BloodPressure.db";
 }
 
-// Parse "YYYY-MM-DDTHH:MM:SSZ" (UTC) and format as local time "YYYY-MM-DD HH:MM:SS"
+// Parse "YYYY-MM-DDTHH:MM:SSZ" (UTC) and format as local time "YYYY-MM-DD HH:MM"
 static std::wstring UtcIsoToLocalDisplay(const std::wstring& isoUtc)
 {
     int Y=0,M=0,D=0,h=0,m=0,s=0;
@@ -88,7 +88,7 @@ static std::wstring UtcIsoToLocalDisplay(const std::wstring& isoUtc)
     if (localtime_s(&tmLocal, &t) != 0) return isoUtc;
 
     wchar_t buf[32];
-    if (wcsftime(buf, 32, L"%Y-%m-%d %H:%M:%S", &tmLocal) == 0)
+    if (wcsftime(buf, 32, L"%Y-%m-%d %H:%M", &tmLocal) == 0)
         return isoUtc;
 
     return buf;
@@ -213,7 +213,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 ShowAddReadingDialog(hWnd);
                 InvalidateRect(hWnd, nullptr, TRUE);
                 break;
-            case IDM_EDITROW: // Reading -> Edit by row number
+            case IDM_EDIT: // Reading -> Edit by row number
                 {
                     int row = 0;
                     if (PromptRowNumber(hWnd, row) && row > 0)
@@ -247,7 +247,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             if (hMenu)
             {
                 AppendMenuW(hMenu, MF_STRING, IDM_ADD, L"Add Reading...");
-                AppendMenuW(hMenu, MF_STRING, IDM_EDITROW, L"Edit Row...");
+                AppendMenuW(hMenu, MF_STRING, IDM_EDIT, L"Edit Row...");
                 POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 ClientToScreen(hWnd, &pt);
                 TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_LEFTALIGN, pt.x, pt.y, 0, hWnd, nullptr);
@@ -264,24 +264,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
             if (g_db)
             {
-                // Count
-                int count = 0;
-                if (g_db->GetReadingCount(count))
-                {
-                    std::wstring msg = L"Readings in database: " + std::to_wstring(count);
-                    TextOutW(hdc, 10, y, msg.c_str(), static_cast<int>(msg.length()));
-                }
-                else
-                {
-                    const wchar_t* err = L"Database not available.";
-                    TextOutW(hdc, 10, y, err, lstrlenW(err));
-                }
-                y += 20;
-
-                // Header
+                //Header
                 HFONT hMono = (HFONT)GetStockObject(SYSTEM_FIXED_FONT);
                 HGDIOBJ oldFont = SelectObject(hdc, hMono);
-                const wchar_t* header = L"No  Date (Local)         Sys/Dia Pul  Note";
+                const wchar_t* header = L"No  Date (Local)      Sys/Dia Pul  Note";
                 TextOutW(hdc, 10, y, header, lstrlenW(header));
                 y += 18;
 
@@ -303,13 +289,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                         wchar_t line[512];
                         
                         if (r.diastolic >= 100) {
-                           swprintf_s(line, L"%3d %-20s %3d/%3d%3d  %s",
+                           swprintf_s(line, L"%3d %-17s %3d/%3d%3d  %s",
                                idx, tsLocal.c_str(),
                                r.systolic, r.diastolic, r.pulse,
                                note.c_str());
 						}
                         else {
-                           swprintf_s(line, L"%3d %-20s %3d/%2d %3d  %s",
+                           swprintf_s(line, L"%3d %-17s %3d/%2d %3d  %s",
                                idx, tsLocal.c_str(),
                                r.systolic, r.diastolic, r.pulse,
                                note.c_str());
@@ -627,6 +613,13 @@ static void ShowAddReadingDialog(HWND owner)
             DispatchMessageW(&msg);
         }
     }
+
+    // Ensure owner is restored and activated
+    if (owner && IsWindow(owner)) {
+        EnableWindow(owner, TRUE);
+        ShowWindow(owner, SW_RESTORE);
+        SetForegroundWindow(owner);
+    }
 }
 
 static void ShowEditReadingDialog(HWND owner, const Reading& r)
@@ -677,6 +670,13 @@ static void ShowEditReadingDialog(HWND owner, const Reading& r)
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+    }
+
+    // Ensure owner is restored and activated
+    if (owner && IsWindow(owner)) {
+        EnableWindow(owner, TRUE);
+        ShowWindow(owner, SW_RESTORE);
+        SetForegroundWindow(owner);
     }
 }
 
@@ -750,7 +750,11 @@ static LRESULT CALLBACK RowPromptWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
     case WM_NCDESTROY:
         if (st)
         {
-            if (st->owner) EnableWindow(st->owner, TRUE);
+            if (st->owner) {
+                EnableWindow(st->owner, TRUE);
+                ShowWindow(st->owner, SW_RESTORE);
+                SetForegroundWindow(st->owner);
+            }
             // propagate the result to PromptRowNumber
             g_rowPromptResult = st->result;
             SetWindowLongPtrW(hWnd, GWLP_USERDATA, 0);

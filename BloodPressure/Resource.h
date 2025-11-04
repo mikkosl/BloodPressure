@@ -7,13 +7,19 @@
 #define IDR_MAINFRAME			128
 #define IDD_BLOODPRESSURE_DIALOG	102
 #define IDD_ABOUTBOX			103
-#define IDM_ABOUT				104
-#define IDM_ADD					105
-#define IDM_EXIT				106
-#define IDM_EDITROW				107
-#define IDI_BLOODPRESSURE		108
-#define IDI_SMALL				109
-#define IDC_BLOODPRESSURE		110
+#define IDM_CREATE				104
+#define IDM_OPEN				105
+#define IDM_CLOSE				106
+#define IDM_EXIT				107
+#define IDM_ADD					108
+#define IDM_EDIT				109
+#define IDM_DELETE				110
+#define IDM_DELETEALL			111
+#define IDM_GETTINGSTARTED		112
+#define IDM_ABOUT				113
+#define IDI_BLOODPRESSURE		114
+#define IDI_SMALL				115
+#define IDC_BLOODPRESSURE		116
 #define IDC_MYICON				2
 #ifndef IDC_STATIC
 #define IDC_STATIC				-1
