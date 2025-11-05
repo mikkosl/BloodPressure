@@ -140,6 +140,23 @@ static HFONT CreateUiFontForWindow(HWND hWnd, int pointSize, int weight = FW_SEM
                        VARIABLE_PITCH, face);
 }
 
+// Helper: compute a good control height for the given font (handles DPI and leading)
+static int IdealCtlHeightFromFont(HWND hwndRef, HFONT hFont, int minH = 28, int padding = 8)
+{
+    HDC hdc = GetDC(hwndRef);
+    int h = minH;
+    if (hdc) {
+        HGDIOBJ old = SelectObject(hdc, hFont);
+        TEXTMETRICW tm{};
+        if (GetTextMetricsW(hdc, &tm)) {
+            h = max(minH, (int)(tm.tmHeight + tm.tmExternalLeading + padding));
+        }
+        SelectObject(hdc, old);
+        ReleaseDC(hwndRef, hdc);
+    }
+    return h;
+}
+
 static std::wstring GetDatabasePath()
 {
     // Use the directory of this source file (i.e., the project folder)
@@ -1941,6 +1958,12 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
         st = new ReportDatesState();
         st->hwnd = hWnd;
         SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)st);
+        
+        // Ideal height for DTPs (compute from current UI font to avoid clipping)
+        st->dtpH = IdealCtlHeightFromFont(hWnd, st->hFont, 28, 10);
+
+        if (st->hStart) SetWindowPos(st->hStart, nullptr, 0, 0, 160, st->dtpH, SWP_NOMOVE | SWP_NOZORDER);
+        if (st->hEnd)   SetWindowPos(st->hEnd, nullptr, 0, 0, 160, st->dtpH, SWP_NOMOVE | SWP_NOZORDER);
 
         st->hFont = CreateUiFontForWindow(hWnd, 14, FW_SEMIBOLD, L"Segoe UI");
         st->ownsFont = (st->hFont != nullptr);
