@@ -22,6 +22,7 @@
 #define IDC_EDIT_DIASTOLIC 41002
 #define IDC_EDIT_PULSE     41003
 #define IDC_EDIT_NOTE      41004
+#define IDC_EDIT_ROWCOMBO  41005
 #define IDM_PAGE_PREV      40005
 #define IDM_PAGE_NEXT      40006
 
@@ -212,23 +213,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 ShowAddReadingDialog(hWnd);
                 InvalidateRect(hWnd, nullptr, TRUE);
                 break;
-            case IDM_EDIT: // Reading -> Edit by row number
+            case IDM_EDIT: // Reading -> Edit
                 {
-                    int row = 0;
-                    if (PromptRowNumber(hWnd, row) && row > 0)
-                    {
-                        // Fetch the same recent list used for display
-                        std::vector<Reading> rows;
-                        if (g_db && g_db->GetRecentReadingsPage(kPageSize, g_pageIndex * kPageSize, rows) && row <= (int)rows.size())
-                        {
-                            ShowEditReadingDialog(hWnd, rows[row - 1]);
-                            InvalidateRect(hWnd, nullptr, TRUE);
-                        }
-                        else
-                        {
-                            MessageBoxW(hWnd, L"Invalid row number.", szTitle, MB_OK | MB_ICONWARNING);
-                        }
-                    }
+                    // Open edit dialog in "picker" mode (no preselected reading)
+                    Reading r{};
+                    ShowEditReadingDialog(hWnd, r);
+                    InvalidateRect(hWnd, nullptr, TRUE);
                 }
                 break;
             case IDM_EXIT:
@@ -306,14 +296,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 HGDIOBJ oldFont = SelectObject(hdc, hMono);
                 const wchar_t* header = L"No  Date (Local)      Sys/Dia Pul  Note";
                 TextOutW(hdc, 10, y, header, lstrlenW(header));
-                y += 18;
+                y += 17;
 
                 // Divider
                 const wchar_t* div = L"----------------------------------------------";
                 TextOutW(hdc, 10, y, div, lstrlenW(div));
-                y += 18;
+                y += 17;
 
-                // Rows: last 50 readings
+                // Rows:
                 std::vector<Reading> rows;
                 if (g_db && g_db->GetRecentReadingsPage(kPageSize, g_pageIndex * kPageSize, rows))
                 {
@@ -339,7 +329,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                         }
 
                         TextOutW(hdc, 10, y, line, (int)wcslen(line));
-                        y += 18;
+                        y += 17;
                         ++idx;
                         if (y > ps.rcPaint.bottom - 20) break; // avoid drawing off-screen
                     }
@@ -347,7 +337,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     {
                         const wchar_t* none = L"(No readings yet. Use Reading -> Add to create one.)";
                         TextOutW(hdc, 10, y, none, lstrlenW(none));
-                        y += 18;
+                        y += 17;
                     }
                     // After drawing rows, optionally show page indicator
                     int total = 0;
@@ -357,26 +347,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                                 L" of " + std::to_wstring((total + kPageSize - 1) / kPageSize) +
                                                 L" (" + std::to_wstring(total) + L" total)";
                         TextOutW(hdc, 10, y, pageInfo.c_str(), (int)pageInfo.size());
-                        y += 18;
+                        y += 17;
                     }
                 }
                 else
                 {
                     const wchar_t* errRows = L"Failed to load readings.";
                     TextOutW(hdc, 10, y, errRows, lstrlenW(errRows));
-                    y += 18;
-                }
-
-                // Footer: paging info
-                {
-                    std::vector<Reading> allRows;
-                    if (g_db->GetRecentReadings(50, allRows))
-                    {
-                        int totalRows = (int)allRows.size();
-                        int totalPages = (totalRows + kPageSize - 1) / kPageSize;
-                        std::wstring footer = L"Page " + std::to_wstring(g_pageIndex + 1) + L" / " + std::to_wstring(totalPages);
-                        TextOutW(hdc, 10, y, footer.c_str(), (int)footer.size());
-                    }
+                    y += 17;
                 }
 
                 // Restore font
@@ -435,7 +413,11 @@ struct AddReadingState
     HFONT hFont{};
     bool editMode{};
     int editId{};
-    int result{-1}; // <-- Add this member to fix C2039
+    int result{-1};
+
+    // New: optional row selector (used when editMode + no preselected Reading)
+    HWND hRowCombo{};
+    std::vector<Reading> pageRows;
 };
 
 static void CenterToOwner(HWND hWnd, HWND owner)
@@ -462,6 +444,21 @@ static HWND CreateLabeledEdit(HWND parent, int x, int y, int wLabel, int wEdit, 
     return hEdit;
 }
 
+static void LoadReadingIntoFields(AddReadingState* st, const Reading& r)
+{
+    if (!st) return;
+    st->editId = r.id;
+
+    wchar_t buf[32];
+    swprintf_s(buf, L"%d", r.systolic);
+    SetWindowTextW(st->hEditSys, buf);
+    swprintf_s(buf, L"%d", r.diastolic);
+    SetWindowTextW(st->hEditDia, buf);
+    swprintf_s(buf, L"%d", r.pulse);
+    SetWindowTextW(st->hEditPulse, buf);
+    SetWindowTextW(st->hEditNote, r.note.c_str());
+}
+
 static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     AddReadingState* st = reinterpret_cast<AddReadingState*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
@@ -486,6 +483,43 @@ static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             const int margin = 12;
             const int x = margin;
             int y = margin;
+
+            // Optional row selector (only when edit mode and no preselected reading id)
+            if (st->editMode && st->editId == 0)
+            {
+                CreateWindowExW(0, L"STATIC", L"Row:",
+                    WS_CHILD | WS_VISIBLE, x, y + 3, 40, 20, hWnd, nullptr, hInst, nullptr);
+
+                st->hRowCombo = CreateWindowExW(0, L"COMBOBOX", L"",
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+                    x + 45, y, 260, 300, hWnd, (HMENU)(INT_PTR)IDC_EDIT_ROWCOMBO, hInst, nullptr);
+                SendMessageW(st->hRowCombo, WM_SETFONT, (WPARAM)st->hFont, TRUE);
+
+                // Load current page rows
+                if (g_db)
+                {
+                    g_db->GetRecentReadingsPage(kPageSize, g_pageIndex * kPageSize, st->pageRows);
+
+                    int idx = 1;
+                    for (const auto& r : st->pageRows)
+                    {
+                        std::wstring label =
+                            std::to_wstring(idx) + L"  " +
+                            UtcIsoToLocalDisplay(r.tsUtc) + L"  " +
+                            std::to_wstring(r.systolic) + L"/" + std::to_wstring(r.diastolic) + L"  " +
+                            std::to_wstring(r.pulse);
+                        int pos = (int)SendMessageW(st->hRowCombo, CB_ADDSTRING, 0, (LPARAM)label.c_str());
+                        SendMessageW(st->hRowCombo, CB_SETITEMDATA, pos, (LPARAM)idx - 1);
+                        ++idx;
+                    }
+                    if (!st->pageRows.empty())
+                    {
+                        SendMessageW(st->hRowCombo, CB_SETCURSEL, 0, 0);
+                        LoadReadingIntoFields(st, st->pageRows[0]);
+                    }
+                }
+                y += 34;
+            }
 
             st->hEditSys = CreateLabeledEdit(hWnd, x, y, 80, 80, IDC_EDIT_SYSTOLIC, L"Systolic", ES_NUMBER);
             y += 30;
@@ -514,17 +548,10 @@ static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             HWND edits[] = { st->hEditSys, st->hEditDia, st->hEditPulse, st->hEditNote, hOk };
             for (HWND e : edits) { if (e) SendMessageW(e, WM_SETFONT, (WPARAM)st->hFont, TRUE); }
 
-            // Prefill in edit mode
-            if (st->editMode && init)
+            // Prefill only when explicit reading provided
+            if (st->editMode && init && init->reading.id > 0)
             {
-                wchar_t buf[32];
-                swprintf_s(buf, L"%d", init->reading.systolic);
-                SetWindowTextW(st->hEditSys, buf);
-                swprintf_s(buf, L"%d", init->reading.diastolic);
-                SetWindowTextW(st->hEditDia, buf);
-                swprintf_s(buf, L"%d", init->reading.pulse);
-                SetWindowTextW(st->hEditPulse, buf);
-                SetWindowTextW(st->hEditNote, init->reading.note.c_str());
+                LoadReadingIntoFields(st, init->reading);
             }
 
             SetFocus(st->hEditSys);
@@ -537,6 +564,24 @@ static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         return 0;
 
     case WM_COMMAND:
+        // Handle row selection change
+        if (HIWORD(wParam) == CBN_SELCHANGE && LOWORD(wParam) == IDC_EDIT_ROWCOMBO)
+        {
+            if (st && st->hRowCombo)
+            {
+                int sel = (int)SendMessageW(st->hRowCombo, CB_GETCURSEL, 0, 0);
+                if (sel >= 0)
+                {
+                    int vecIndex = (int)SendMessageW(st->hRowCombo, CB_GETITEMDATA, sel, 0);
+                    if (vecIndex >= 0 && vecIndex < (int)st->pageRows.size())
+                    {
+                        LoadReadingIntoFields(st, st->pageRows[vecIndex]);
+                    }
+                }
+            }
+            return 0;
+        }
+
         switch (LOWORD(wParam))
         {
         case IDOK:
