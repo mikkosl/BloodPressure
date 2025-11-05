@@ -1330,10 +1330,10 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         }
 
         // OK button
-        const int margin = 10;
+        const int marginRA = 10;
         st->hClose = CreateWindowExW(0, L"BUTTON", L"OK",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-            margin, 0, 80, 26, hWnd, (HMENU)IDOK, hInst, nullptr);
+            marginRA, 0, 80, 26, hWnd, (HMENU)IDOK, hInst, nullptr);
         if (!st->hClose) {
             DWORD err = GetLastError();
             wchar_t msg[128];
@@ -1347,7 +1347,7 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         // ListView (table) for the averages
         st->hList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-            margin, margin, 100, 100, hWnd, (HMENU)42001, hInst, nullptr);
+            marginRA, marginRA, 100, 100, hWnd, (HMENU)42001, hInst, nullptr);
         if (!st->hList) {
             DWORD err = GetLastError();
             wchar_t msg[128];
@@ -1408,42 +1408,38 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
             }
         }
 
-        // New: auto-size columns to ensure header/content appear even if initial size is small:
+        // In ReportDatesResultsWndProc -> case WM_CREATE, after the ListView is created and populated, add:
+                // Auto-size columns, then lay out controls and window like the Report All window
         if (st->hList) {
-            for (int i = 0; i < 5; ++i) {
+            for (int i = 0; i < 4; ++i) {
                 ListView_SetColumnWidth(st->hList, i, LVSCW_AUTOSIZE_USEHEADER);
             }
-            InvalidateRect(st->hList, nullptr, TRUE);
-            UpdateWindow(st->hList);
         }
 
-        // Initial window size and control layout
-        RECT rc{ 0,0, 620, 280 };
+        // Size the window and position controls
+        RECT rc{ 0,0, 760, 420 };
         AdjustWindowRectEx(&rc, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
         SetWindowPos(hWnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER);
 
-        // Place controls
         RECT rcClient{};
         GetClientRect(hWnd, &rcClient);
         const int btnW = 80, btnH = 26;
+
         if (st->hClose) {
-            SetWindowPos(st->hClose, nullptr, rcClient.right - (btnW + margin), rcClient.bottom - (btnH + margin),
+            SetWindowPos(st->hClose, nullptr, rcClient.right - (btnW + marginRA), rcClient.bottom - (btnH + marginRA),
                 btnW, btnH, SWP_NOZORDER);
         }
         if (st->hList) {
-            int listRight = rcClient.right - margin;
-            int listBottom = (st->hClose ? (rcClient.bottom - (btnH + 2 * margin)) : (rcClient.bottom - margin));
-            SetWindowPos(st->hList, nullptr, margin, margin,
-                listRight - margin, listBottom - margin, SWP_NOZORDER);
+            int listRight = rcClient.right - marginRA;
+            int listBottom = (st->hClose ? (rcClient.bottom - (btnH + 2 * marginRA)) : (rcClient.bottom - marginRA));
+            SetWindowPos(st->hList, nullptr, marginRA, marginRA,
+                listRight - marginRA, listBottom - marginRA, SWP_NOZORDER);
         }
 
-        // Center and keep on-screen
         CenterToOwner(hWnd, GetWindow(hWnd, GW_OWNER));
-        EnsureWindowOnScreen(hWnd);
-        RedrawWindow(hWnd, nullptr, nullptr,
-                     RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
-    }
-    return 0;
+        EnsureWindowOnScreen(hWnd);    }
+
+        return 0;
 
     case WM_SIZE:
     {
@@ -1797,10 +1793,7 @@ static LRESULT CALLBACK ReportDatesResultsWndProc(HWND hWnd, UINT msg, WPARAM wP
             margin, 0, 80, 26, hWnd, (HMENU)IDOK, hInst, nullptr);
         if (st->hClose) SendMessageW(st->hClose, WM_SETFONT, (WPARAM)st->hFont, TRUE);
 
-        // In ReportDatesResultsWndProc, replace the ListView setup/population block
-        // (the part that builds "Date, Systolic, Diastolic, Pulse, Note") with this:
-
-                // ListView: Morning/Evening/Overall averages for the filtered date range
+        // ListView: Morning/Evening/Overall averages for the filtered date range
         st->hList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
             margin, margin, 100, 100, hWnd, (HMENU)43050, hInst, nullptr);
@@ -1894,6 +1887,63 @@ static LRESULT CALLBACK ReportDatesResultsWndProc(HWND hWnd, UINT msg, WPARAM wP
                 ListView_SetColumnWidth(st->hList, i, LVSCW_AUTOSIZE_USEHEADER);
             }
         }
+
+        // Layout: size window (keeps requested size) and place controls
+        RECT rc{ 0,0, 760, 420 };
+        AdjustWindowRectEx(&rc, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
+        SetWindowPos(hWnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER | SWP_NOMOVE);
+
+        RECT rcClient{}; GetClientRect(hWnd, &rcClient);
+        const int btnW = 80, btnH = 26;
+
+        if (st->hClose) {
+            SetWindowPos(st->hClose, nullptr,
+                rcClient.right - (btnW + margin),
+                rcClient.bottom - (btnH + margin),
+                btnW, btnH, SWP_NOZORDER);
+        }
+        if (st->hList) {
+            const int listRight = rcClient.right - margin;
+            const int listBottom = (st->hClose ? (rcClient.bottom - (btnH + 2 * margin)) : (rcClient.bottom - margin));
+            SetWindowPos(st->hList, nullptr,
+                margin, margin,
+                listRight - margin,
+                listBottom - margin,
+                SWP_NOZORDER);
+        }
+
+        CenterToOwner(hWnd, GetWindow(hWnd, GW_OWNER));
+        EnsureWindowOnScreen(hWnd);
+    }
+    return 0;
+
+    case WM_SIZE:
+    {
+        if (!st) break;
+        RECT rc{}; GetClientRect(hWnd, &rc);
+        const int margin = 10;
+        const int btnW = 80, btnH = 26;
+
+        if (st->hClose) {
+            SetWindowPos(st->hClose, nullptr,
+                rc.right - (btnW + margin),
+                rc.bottom - (btnH + margin),
+                btnW, btnH, SWP_NOZORDER);
+        }
+        if (st->hList) {
+            const int listRight = rc.right - margin;
+            const int listBottom = (st->hClose ? (rc.bottom - (btnH + 2 * margin)) : (rc.bottom - margin));
+            SetWindowPos(st->hList, nullptr,
+                margin, margin,
+                listRight - margin,
+                listBottom - margin,
+                SWP_NOZORDER);
+
+            // Keep columns sensible after resize
+            for (int i = 0; i < 4; ++i) {
+                ListView_SetColumnWidth(st->hList, i, LVSCW_AUTOSIZE_USEHEADER);
+            }
+        }
     }
     return 0;
 
@@ -1946,7 +1996,7 @@ static void ShowReportDatesResultsWindow(HWND owner, const SYSTEMTIME& stStart, 
 
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
     HWND hWnd = CreateWindowExW(WS_EX_DLGMODALFRAME,
-        L"BP_ReportDatesResultsWindow", L"Report - Readings by Dates",
+        L"BP_ReportDatesResultsWindow", L"Report - Averages by Dates",
         style, CW_USEDEFAULT, CW_USEDEFAULT, 760, 420,
         owner, nullptr, hInst, &init);
 
