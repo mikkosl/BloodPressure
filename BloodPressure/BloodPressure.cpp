@@ -4,6 +4,9 @@
 #include "BloodPressure.h"
 #include "Database.h"
 
+#include <commdlg.h>
+#pragma comment(lib, "Comdlg32.lib")
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -44,6 +47,7 @@ ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
+static void         CreateDatabaseDialog(HWND owner); // <-- add
 
 static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void ShowAddReadingDialog(HWND owner);
@@ -219,6 +223,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             {
             case IDM_ABOUT:
                 DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
+                break;
+            case IDM_CREATE: // <-- handle Create DB menu
+                CreateDatabaseDialog(hWnd);
                 break;
             case IDM_ADD: // Reading -> Add
                 ShowAddReadingDialog(hWnd);
@@ -975,4 +982,36 @@ static bool PromptRowNumber(HWND owner, int& outRow)
     }
     g_rowPromptResult = -1;
     return false;
+}
+
+// Simple "Create DB" using a Save File dialog and (re)initializing the Database
+static void CreateDatabaseDialog(HWND owner)
+{
+    wchar_t file[MAX_PATH] = L"BloodPressure.db";
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"Database (*.db)\0*.db\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrTitle = L"Create Database";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+    ofn.lpstrDefExt = L"db";
+
+    if (!GetSaveFileNameW(&ofn))
+        return; // user cancelled
+
+    // (Re)create/open the DB at the chosen path; Initialize will create file/schema as needed
+    g_db.reset();
+    g_db = std::make_unique<Database>(file);
+    if (!g_db->Initialize())
+    {
+        MessageBoxW(owner, L"Failed to create or initialize the database.", szTitle, MB_OK | MB_ICONERROR);
+        g_db.reset();
+        return;
+    }
+
+    g_pageIndex = 0;
+    if (g_mainWnd) InvalidateRect(g_mainWnd, nullptr, TRUE);
+    MessageBoxW(owner, L"Database created and ready.", szTitle, MB_OK | MB_ICONINFORMATION);
 }
