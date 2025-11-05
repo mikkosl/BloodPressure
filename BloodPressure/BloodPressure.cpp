@@ -23,6 +23,7 @@
 #define IDC_EDIT_PULSE     41003
 #define IDC_EDIT_NOTE      41004
 #define IDC_EDIT_ROWCOMBO  41005
+#define IDC_BTN_DELETE     41006
 #define IDM_PAGE_PREV      40005
 #define IDM_PAGE_NEXT      40006
 
@@ -103,7 +104,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(lpCmdLine);
 
     // Initialize COM (for SHGetKnownFolderPath)
-    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    HRESULT hrCoInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(hrCoInit)) {
+        MessageBoxW(nullptr, L"Failed to initialize COM.", szTitle, MB_ICONERROR | MB_OK);
+        return FALSE;
+    }
 
     // Initialize global strings
     LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
@@ -136,7 +141,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     // Main message loop:
     while (GetMessage(&msg, nullptr, 0, 0))
     {
-        if (!TranslateAccelerator(g_mainWnd, hAccelTable, &msg))
+        // Fix: Only call TranslateAccelerator if g_mainWnd is not nullptr
+        if (g_mainWnd && !TranslateAccelerator(g_mainWnd, hAccelTable, &msg))
+        {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+        else if (!g_mainWnd)
         {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
@@ -415,9 +426,12 @@ struct AddReadingState
     int editId{};
     int result{-1};
 
-    // New: optional row selector (used when editMode + no preselected Reading)
+    // Row picker (edit mode without preselected row)
     HWND hRowCombo{};
     std::vector<Reading> pageRows;
+
+    // New: delete button (only in edit mode)
+    HWND hBtnDelete{};
 };
 
 static void CenterToOwner(HWND hWnd, HWND owner)
@@ -545,6 +559,15 @@ static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                 x + 80 + 8 + 90, y, 80, 26, hWnd, (HMENU)IDCANCEL, hInst, nullptr);
 
+            // New: Delete button in edit mode
+            if (st->editMode) {
+                st->hBtnDelete = CreateWindowExW(0, L"BUTTON", L"Delete",
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                    x + 80 + 8 + 90 + 90, y, 80, 26, hWnd, (HMENU)IDC_BTN_DELETE, hInst, nullptr);
+                SendMessageW(st->hBtnDelete, WM_SETFONT, (WPARAM)st->hFont, TRUE);
+                EnableWindow(st->hBtnDelete, st->editId > 0);
+            }
+
             HWND edits[] = { st->hEditSys, st->hEditDia, st->hEditPulse, st->hEditNote, hOk };
             for (HWND e : edits) { if (e) SendMessageW(e, WM_SETFONT, (WPARAM)st->hFont, TRUE); }
 
@@ -576,6 +599,7 @@ static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
                     if (vecIndex >= 0 && vecIndex < (int)st->pageRows.size())
                     {
                         LoadReadingIntoFields(st, st->pageRows[vecIndex]);
+                        if (st->hBtnDelete) EnableWindow(st->hBtnDelete, st->editId > 0);
                     }
                 }
             }
@@ -647,6 +671,32 @@ static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 
         case IDCANCEL:
             DestroyWindow(hWnd);
+            return 0;
+
+        case IDC_BTN_DELETE:
+            if (st && g_db && st->editMode)
+            {
+                // Confirm before deletion
+                if (MessageBoxW(hWnd, L"Delete this reading? This cannot be undone.",
+                    szTitle, MB_ICONWARNING | MB_OKCANCEL | MB_DEFBUTTON2) != IDOK)
+                {
+                    return 0;
+                }
+
+                if (!g_db->DeleteReading(st->editId))
+                {
+                    MessageBoxW(hWnd, L"Failed to delete the reading.", szTitle, MB_OK | MB_ICONERROR);
+                    return 0;
+                }
+
+                // Refresh main window and close dialog
+                if (st->owner) {
+                    InvalidateRect(st->owner, nullptr, TRUE);
+                    UpdateWindow(st->owner);
+                }
+                DestroyWindow(hWnd);
+                return 0;
+            }
             return 0;
         }
         break;

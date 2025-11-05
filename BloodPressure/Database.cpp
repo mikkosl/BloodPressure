@@ -1,4 +1,5 @@
 #include "Database.h"
+
 extern "C" {
 #include "sqlite3.h"
 }
@@ -328,6 +329,25 @@ bool Database::UpdateReading(int id, int systolic, int diastolic, int pulse, con
 
     sqlite3_finalize(stmt);
     return true;
+}
+
+bool Database::DeleteReading(int id)
+{
+    if (!db_) return false;
+
+    const char* sql = "DELETE FROM readings WHERE id = ?";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return false;
+
+    if (sqlite3_bind_int(stmt, 1, id) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
+    bool result = (sqlite3_step(stmt) == SQLITE_DONE);
+    sqlite3_finalize(stmt);
+    return result;
 }
 
 std::string Database::WStringToUtf8(const std::wstring& w)
