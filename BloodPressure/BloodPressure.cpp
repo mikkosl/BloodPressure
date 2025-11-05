@@ -48,7 +48,8 @@ BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 static void         CreateDatabaseDialog(HWND owner);
-static void         OpenDatabaseDialog(HWND owner); // <-- add
+static void         OpenDatabaseDialog(HWND owner);
+static void         CloseDatabaseDialog(HWND owner); // <-- add
 
 static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void ShowAddReadingDialog(HWND owner);
@@ -127,17 +128,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         return FALSE;
     }
 
-    // Initialize SQLite database
-    {
-        const std::wstring dbPath = GetDatabasePath();
-        g_db = std::make_unique<Database>(dbPath.c_str());
-        if (!g_db->Initialize())
-        {
-            MessageBoxW(nullptr, L"Failed to initialize database.", szTitle, MB_ICONERROR | MB_OK);
-        }
-        // Ensure the window repaints after DB becomes available so readings show immediately
-        if (g_mainWnd) InvalidateRect(g_mainWnd, nullptr, TRUE);
-    }
+    // Do not open any database at startup. User can Create/Open from the menu.
 
     HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_BLOODPRESSURE));
 
@@ -146,7 +137,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     // Main message loop:
     while (GetMessage(&msg, nullptr, 0, 0))
     {
-        // Fix: Only call TranslateAccelerator if g_mainWnd is not nullptr
         if (g_mainWnd && !TranslateAccelerator(g_mainWnd, hAccelTable, &msg))
         {
             TranslateMessage(&msg);
@@ -228,8 +218,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             case IDM_CREATE:
                 CreateDatabaseDialog(hWnd);
                 break;
-            case IDM_OPEN: // <-- add
+            case IDM_OPEN:
                 OpenDatabaseDialog(hWnd);
+                break;
+            case IDM_CLOSE: // <-- add
+                CloseDatabaseDialog(hWnd);
                 break;
             case IDM_ADD:
                 ShowAddReadingDialog(hWnd);
@@ -329,25 +322,25 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 std::vector<Reading> rows;
                 if (g_db && g_db->GetRecentReadingsPage(kPageSize, g_pageIndex * kPageSize, rows))
                 {
-                   int idx = 1;
+                    int idx = 1;
                     for (const auto& r : rows)
                     {
                         std::wstring note = TruncateForDisplay(r.note, 60);
                         std::wstring tsLocal = UtcIsoToLocalDisplay(r.tsUtc);
 
                         wchar_t line[512];
-                        
+
                         if (r.diastolic >= 100) {
-                           swprintf_s(line, L"%3d %-17s %3d/%3d%3d  %s",
-                               idx, tsLocal.c_str(),
-                               r.systolic, r.diastolic, r.pulse,
-                               note.c_str());
-						}
+                            swprintf_s(line, L"%3d %-17s %3d/%3d%3d  %s",
+                                idx, tsLocal.c_str(),
+                                r.systolic, r.diastolic, r.pulse,
+                                note.c_str());
+                        }
                         else {
-                           swprintf_s(line, L"%3d %-17s %3d/%2d %3d  %s",
-                               idx, tsLocal.c_str(),
-                               r.systolic, r.diastolic, r.pulse,
-                               note.c_str());
+                            swprintf_s(line, L"%3d %-17s %3d/%2d %3d  %s",
+                                idx, tsLocal.c_str(),
+                                r.systolic, r.diastolic, r.pulse,
+                                note.c_str());
                         }
 
                         TextOutW(hdc, 10, y, line, (int)wcslen(line));
@@ -357,11 +350,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     }
                     if (rows.empty())
                     {
-                        const wchar_t* none = L"(No readings yet. Use Reading -> Add to create one.)";
+                        const wchar_t* none = L"(No readings yet. Use File -> Add to create one.)";
                         TextOutW(hdc, 10, y, none, lstrlenW(none));
                         y += 17;
                     }
-                    // After drawing rows, optionally show page indicator
+                    // Page indicator
                     int total = 0;
                     if (g_db->GetReadingCount(total))
                     {
@@ -381,6 +374,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
                 // Restore font
                 SelectObject(hdc, oldFont);
+            }
+            else
+            {
+                // No DB open yet: show a friendly hint
+                const wchar_t* msg1 = L"No database is open.";
+                const wchar_t* msg2 = L"Use File -> Create or File -> Open to begin.";
+                TextOutW(hdc, 10, y, msg1, lstrlenW(msg1));
+                y += 17;
+                TextOutW(hdc, 10, y, msg2, lstrlenW(msg2));
+                y += 17;
             }
 
             EndPaint(hWnd, &ps);
@@ -1050,4 +1053,30 @@ static void OpenDatabaseDialog(HWND owner)
     g_pageIndex = 0;
     if (g_mainWnd) InvalidateRect(g_mainWnd, nullptr, TRUE);
     MessageBoxW(owner, L"Database opened successfully.", szTitle, MB_OK | MB_ICONINFORMATION);
+}
+
+// Simple "Close DB" confirmation and teardown
+static void CloseDatabaseDialog(HWND owner)
+{
+    if (!g_db)
+    {
+        MessageBoxW(owner, L"No database is currently open.", szTitle, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    const int res = MessageBoxW(owner,
+        L"Close the current database?",
+        szTitle,
+        MB_ICONQUESTION | MB_OKCANCEL | MB_DEFBUTTON2);
+
+    if (res != IDOK)
+        return;
+
+    g_db.reset();           // closes the SQLite connection
+    g_pageIndex = 0;
+
+    if (g_mainWnd)
+        InvalidateRect(g_mainWnd, nullptr, TRUE);
+
+    MessageBoxW(owner, L"Database closed.", szTitle, MB_OK | MB_ICONINFORMATION);
 }
