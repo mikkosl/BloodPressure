@@ -21,6 +21,11 @@
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "Ole32.lib")
 
+#ifndef DateTime_SetFormatW
+#define DateTime_SetFormatW(hwndDP, pszFormat) \
+    (void)SendMessageW((hwndDP), DTM_SETFORMATW, 0, (LPARAM)(LPCWSTR)(pszFormat))
+#endif
+
 // Replace your ListView_SetItemTextW macro with this safer wrapper:
 #ifndef ListView_SetItemTextW
 static inline void LV_SetItemTextW(HWND hwndLV, int i, int iSub, const wchar_t* text)
@@ -1958,6 +1963,9 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | DTS_SHORTDATECENTURYFORMAT,
             margin + 50 + 160 + 10 + 40, margin, 160, 24, hWnd, (HMENU)IDC_DATES_END, hInst, nullptr);
 
+        DateTime_SetFormatW(st->hStart, L"yyyy-MM-dd");
+        DateTime_SetFormatW(st->hEnd, L"yyyy-MM-dd");
+
         st->hOk = CreateWindowExW(0, L"BUTTON", L"Refresh",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
             margin, 0, 80, 26, hWnd, (HMENU)IDOK, hInst, nullptr);
@@ -2058,17 +2066,34 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
     return 0;
 
     case WM_NOTIFY:
-        if (st) {
-            auto nm = reinterpret_cast<LPNMHDR>(lParam);
-            if ((nm->idFrom == IDC_DATES_START || nm->idFrom == IDC_DATES_END) && nm->code == DTN_DATETIMECHANGE) {
-                // Pull latest times and refresh
+    {
+        if (!st) break;
+        auto nm = reinterpret_cast<LPNMHDR>(lParam);
+
+        const bool isStart = (nm->idFrom == IDC_DATES_START);
+        const bool isEnd = (nm->idFrom == IDC_DATES_END);
+        if ((isStart || isEnd) && (nm->code == DTN_DATETIMECHANGE || nm->code == DTN_CLOSEUP))
+        {
+            if (nm->code == DTN_DATETIMECHANGE)
+            {
+                auto pdt = reinterpret_cast<LPNMDATETIMECHANGE>(lParam);
+                if (pdt->dwFlags == GDT_VALID) {
+                    if (isStart) st->stStart = pdt->st;
+                    else         st->stEnd = pdt->st;
+                }
+            }
+            else // DTN_CLOSEUP: ensure we have the committed value
+            {
                 DateTime_GetSystemtime(st->hStart, &st->stStart);
                 DateTime_GetSystemtime(st->hEnd, &st->stEnd);
-                FillDatesAveragesList(st->hList, st->stStart, st->stEnd);
-                return 0;
             }
+
+            FillDatesAveragesList(st->hList, st->stStart, st->stEnd);
+            InvalidateRect(st->hList, nullptr, FALSE);
+            return 0;
         }
-        break;
+    }
+    break;
 
     case WM_COMMAND:
         switch (LOWORD(wParam))
@@ -2170,7 +2195,7 @@ static void ShowReportDatesWindow(HWND owner)
 
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
 
-    HWND hWnd = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_COMPOSITED, // <-- add WS_EX_COMPOSITED
+    HWND hWnd = CreateWindowExW(WS_EX_DLGMODALFRAME,
         L"BP_ReportDatesWindow", L"Report - By Dates",
         style,
         CW_USEDEFAULT, CW_USEDEFAULT, 620, 200,
