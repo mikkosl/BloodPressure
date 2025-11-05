@@ -25,6 +25,7 @@ public:
     bool AddReading(int systolic, int diastolic, int pulse, const wchar_t* note);
     bool UpdateReading(int id, int systolic, int diastolic, int pulse, const wchar_t* note);
     bool DeleteReading(int id);
+    bool DeleteAllReadings(); // <-- add
     bool GetReadingCount(int& outCount) const;
 
     // New: fetch most recent readings (ordered by timestamp desc)

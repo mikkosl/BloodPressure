@@ -221,20 +221,40 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             case IDM_OPEN:
                 OpenDatabaseDialog(hWnd);
                 break;
-            case IDM_CLOSE: // <-- add
+            case IDM_CLOSE:
                 CloseDatabaseDialog(hWnd);
+                break;
+            case IDM_DELETEALL: // <-- add
+                if (!g_db) {
+                    MessageBoxW(hWnd, L"No database is currently open.", szTitle, MB_OK | MB_ICONINFORMATION);
+                    break;
+                }
+                if (MessageBoxW(hWnd,
+                    L"Delete ALL readings? This cannot be undone.",
+                    szTitle, MB_ICONWARNING | MB_OKCANCEL | MB_DEFBUTTON2) != IDOK)
+                {
+                    break;
+                }
+                if (!g_db->DeleteAllReadings()) {
+                    MessageBoxW(hWnd, L"Failed to delete all readings.", szTitle, MB_OK | MB_ICONERROR);
+                    break;
+                }
+                g_pageIndex = 0;
+                InvalidateRect(hWnd, nullptr, TRUE);
+                UpdateWindow(hWnd);
+                MessageBoxW(hWnd, L"All readings deleted.", szTitle, MB_OK | MB_ICONINFORMATION);
                 break;
             case IDM_ADD:
                 ShowAddReadingDialog(hWnd);
                 InvalidateRect(hWnd, nullptr, TRUE);
                 break;
-            case IDM_EDIT: // Reading -> Edit
-                {
-                    // Open edit dialog in "picker" mode (no preselected reading)
-                    Reading r{};
-                    ShowEditReadingDialog(hWnd, r);
-                    InvalidateRect(hWnd, nullptr, TRUE);
-                }
+            case IDM_EDIT:
+            {
+                // Open edit dialog in "picker" mode (no preselected reading)
+                Reading r{};
+                ShowEditReadingDialog(hWnd, r);
+                InvalidateRect(hWnd, nullptr, TRUE);
+            }
                 break;
             case IDM_EXIT:
                 DestroyWindow(hWnd);
@@ -350,7 +370,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     }
                     if (rows.empty())
                     {
-                        const wchar_t* none = L"(No readings yet. Use File -> Add to create one.)";
+                        const wchar_t* none = L"(No readings yet. Use Reading -> Add to create one.)";
                         TextOutW(hdc, 10, y, none, lstrlenW(none));
                         y += 17;
                     }
@@ -379,7 +399,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             {
                 // No DB open yet: show a friendly hint
                 const wchar_t* msg1 = L"No database is open.";
-                const wchar_t* msg2 = L"Use File -> Create or File -> Open to begin.";
+                const wchar_t* msg2 = L"Use File -> Create DB or File -> Open DB to begin.";
                 TextOutW(hdc, 10, y, msg1, lstrlenW(msg1));
                 y += 17;
                 TextOutW(hdc, 10, y, msg2, lstrlenW(msg2));

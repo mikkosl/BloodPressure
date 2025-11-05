@@ -350,6 +350,15 @@ bool Database::DeleteReading(int id)
     return result;
 }
 
+bool Database::DeleteAllReadings()
+{
+    if (!db_) return false;
+    // Delete all rows; schema remains intact
+    const char* sql = "DELETE FROM readings;";
+    int rc = ExecWithRetry(db_, sql, "DeleteAllReadings");
+    return rc == SQLITE_OK;
+}
+
 std::string Database::WStringToUtf8(const std::wstring& w)
 {
     if (w.empty()) return {};
