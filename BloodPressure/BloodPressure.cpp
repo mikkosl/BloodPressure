@@ -1544,151 +1544,101 @@ struct ReportDatesState
     HWND hCancel{};
     SYSTEMTIME stStart{};
     SYSTEMTIME stEnd{};
+    int dtpH{24}; // <-- ideal height for DateTime pickers
+
+    // New: combined view pieces
+    HWND hList{};           // ListView with results
+    bool listInit{ false };   // columns inserted once
 };
 
-// Replace the whole ReportDatesWndProc with this fixed version (removes duplicate case IDOK and handles OK in WM_COMMAND)
-static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+// Fills the ListView with Morning/Evening/Overall averages in the given date range
+static void FillDatesAveragesList(HWND hList, const SYSTEMTIME& stStart, const SYSTEMTIME& stEnd)
 {
-    ReportDatesState* st = reinterpret_cast<ReportDatesState*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
-    switch (msg)
-    {
-    case WM_CREATE:
-    {
-        st = new ReportDatesState();
-        st->hwnd = hWnd;
-        SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)st);
+    if (!hList) return;
 
-        st->hFont = CreateUiFontForWindow(hWnd, 14, FW_SEMIBOLD, L"Segoe UI");
-        st->ownsFont = (st->hFont != nullptr);
-        if (!st->hFont) st->hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    // Clear current items
+    ListView_DeleteAllItems(hList);
 
-        const int margin = 10;
-        const int ctlH = 24;
-
-        // Labels + DateTime pickers
-        CreateWindowExW(0, L"STATIC", L"Start:",
-            WS_CHILD | WS_VISIBLE, margin, margin + 4, 45, ctlH, hWnd, nullptr, hInst, nullptr);
-
-        st->hStart = CreateWindowExW(0, DATETIMEPICK_CLASSW, L"",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | DTS_SHORTDATECENTURYFORMAT,
-            margin + 50, margin, 160, ctlH, hWnd, (HMENU)IDC_DATES_START, hInst, nullptr);
-
-        CreateWindowExW(0, L"STATIC", L"End:",
-            WS_CHILD | WS_VISIBLE, margin + 50 + 160 + 10, margin + 4, 35, ctlH, hWnd, nullptr, hInst, nullptr);
-
-        st->hEnd = CreateWindowExW(0, DATETIMEPICK_CLASSW, L"",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | DTS_SHORTDATECENTURYFORMAT,
-            margin + 50 + 160 + 10 + 40, margin, 160, ctlH, hWnd, (HMENU)IDC_DATES_END, hInst, nullptr);
-
-        st->hOk = CreateWindowExW(0, L"BUTTON", L"OK",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-            margin, 0, 80, 26, hWnd, (HMENU)IDOK, hInst, nullptr);
-
-        st->hCancel = CreateWindowExW(0, L"BUTTON", L"Cancel",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-            margin, 0, 80, 26, hWnd, (HMENU)IDCANCEL, hInst, nullptr);
-
-        // Apply fonts
-        HWND cts[] = { st->hStart, st->hEnd, st->hOk, st->hCancel };
-        for (HWND c : cts) { if (c) SendMessageW(c, WM_SETFONT, (WPARAM)st->hFont, TRUE); }
-
-        // Initialize dates to today
-        GetLocalTime(&st->stStart);
-        st->stEnd = st->stStart;
-        DateTime_SetSystemtime(st->hStart, GDT_VALID, &st->stStart);
-        DateTime_SetSystemtime(st->hEnd, GDT_VALID, &st->stEnd);
-
-        // Initial layout
-        RECT rc{ 0,0, 620, 200 };
-        AdjustWindowRectEx(&rc, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
-        SetWindowPos(hWnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER);
-
-        RECT rcClient{}; GetClientRect(hWnd, &rcClient);
-        const int btnW = 80, btnH = 26;
-
-        if (st->hOk) {
-            SetWindowPos(st->hOk, nullptr, rcClient.right - (btnW * 2 + margin * 2), rcClient.bottom - (btnH + margin),
-                btnW, btnH, SWP_NOZORDER);
-        }
-        if (st->hCancel) {
-            SetWindowPos(st->hCancel, nullptr, rcClient.right - (btnW + margin), rcClient.bottom - (btnH + margin),
-                btnW, btnH, SWP_NOZORDER);
-        }
-
-        CenterToOwner(hWnd, GetWindow(hWnd, GW_OWNER));
-        EnsureWindowOnScreen(hWnd);
-    }
-    return 0;
-
-    case WM_SIZE:
-    {
-        if (!st) break;
-        RECT rc{}; GetClientRect(hWnd, &rc);
-        const int margin = 10;
-        const int ctlH = 24;
-        const int btnW = 80, btnH = 26;
-
-        // Reposition pickers
-        if (st->hStart) SetWindowPos(st->hStart, nullptr, margin + 50, margin, 160, ctlH, SWP_NOZORDER);
-        if (st->hEnd)   SetWindowPos(st->hEnd, nullptr, margin + 50 + 160 + 10 + 40, margin, 160, ctlH, SWP_NOZORDER);
-
-        if (st->hOk) {
-            SetWindowPos(st->hOk, nullptr, rc.right - (btnW * 2 + margin * 2), rc.bottom - (btnH + margin),
-                btnW, btnH, SWP_NOZORDER);
-        }
-        if (st->hCancel) {
-            SetWindowPos(st->hCancel, nullptr, rc.right - (btnW + margin), rc.bottom - (btnH + margin),
-                btnW, btnH, SWP_NOZORDER);
-        }
-    }
-    return 0;
-
-    // Removed duplicate 'case IDOK:' here to avoid conflict with WM_CREATE (both are 1)
-
-    case WM_COMMAND:
-        switch (LOWORD(wParam))
-        {
-        case IDOK:
-        {
-            // Retrieve chosen dates and show results
-            if (st) {
-                DateTime_GetSystemtime(st->hStart, &st->stStart);
-                DateTime_GetSystemtime(st->hEnd, &st->stEnd);
-                HWND owner = GetWindow(hWnd, GW_OWNER);
-                ShowReportDatesResultsWindow(owner, st->stStart, st->stEnd);
-            }
-            DestroyWindow(hWnd);
-            return 0;
-        }
-        case IDCANCEL:
-            DestroyWindow(hWnd);
-            return 0;
-        }
-        break;
-
-    case WM_DESTROY:
-    {
-        HWND owner = GetWindow(hWnd, GW_OWNER);
-        if (owner && IsWindow(owner)) {
-            EnableWindow(owner, TRUE);
-            ShowWindow(owner, SW_RESTORE);
-            SetForegroundWindow(owner);
-        }
-        return 0;
+    if (!g_db) {
+        LVITEMW it{}; it.mask = LVIF_TEXT; it.iItem = 0;
+        it.pszText = const_cast<wchar_t*>(L"No database is open.");
+        ListView_InsertItemW(hList, &it);
+        return;
     }
 
-    case WM_NCDESTROY:
-        if (st) {
-            if (st->ownsFont && st->hFont) {
-                DeleteObject(st->hFont);
-                st->hFont = nullptr;
-            }
-            SetWindowLongPtrW(hWnd, GWLP_USERDATA, 0);
-            delete st;
-        }
-        return 0;
+    std::vector<Reading> all;
+    if (!g_db->GetAllReadings(all)) {
+        LVITEMW it{}; it.mask = LVIF_TEXT; it.iItem = 0;
+        it.pszText = const_cast<wchar_t*>(L"Failed to load readings.");
+        ListView_InsertItemW(hList, &it);
+        return;
     }
-    return DefWindowProcW(hWnd, msg, wParam, lParam);
+
+    const int startKey = DateKeyFromSystemTime(stStart);
+    const int endKeyRaw = DateKeyFromSystemTime(stEnd);
+    const int startK = (startKey <= endKeyRaw) ? startKey : endKeyRaw;
+    const int endK = (startKey <= endKeyRaw) ? endKeyRaw : startKey;
+
+    int cntM = 0, cntE = 0, cntO = 0;
+    long sumSysM = 0, sumDiaM = 0, sumPulM = 0;
+    long sumSysE = 0, sumDiaE = 0, sumPulE = 0;
+    long sumSysO = 0, sumDiaO = 0, sumPulO = 0;
+
+    for (const auto& r : all) {
+        std::tm local{};
+        if (!TryParseUtcIsoToLocalTm(r.tsUtc, local)) continue;
+
+        const int key = DateKeyFromTm(local);
+        if (key < startK || key > endK) continue;
+
+        sumSysO += r.systolic; sumDiaO += r.diastolic; sumPulO += r.pulse; ++cntO;
+
+        if (IsMorningHour(local.tm_hour)) {
+            sumSysM += r.systolic; sumDiaM += r.diastolic; sumPulM += r.pulse; ++cntM;
+        }
+        else if (IsEveningHour(local.tm_hour)) {
+            sumSysE += r.systolic; sumDiaE += r.diastolic; sumPulE += r.pulse; ++cntE;
+        }
+    }
+
+    if (cntO == 0) {
+        LVITEMW it{}; it.mask = LVIF_TEXT; it.iItem = 0;
+        it.pszText = const_cast<wchar_t*>(L"No data in selected range.");
+        ListView_InsertItemW(hList, &it);
+    }
+    else {
+        const int avgSysM = RoundAvg((int)sumSysM, cntM);
+        const int avgDiaM = RoundAvg((int)sumDiaM, cntM);
+        const int avgPulM = RoundAvg((int)sumPulM, cntM);
+
+        const int avgSysE = RoundAvg((int)sumSysE, cntE);
+        const int avgDiaE = RoundAvg((int)sumDiaE, cntE);
+        const int avgPulE = RoundAvg((int)sumPulE, cntE);
+
+        const int avgSysO = RoundAvg((int)sumSysO, cntO);
+        const int avgDiaO = RoundAvg((int)sumDiaO, cntO);
+        const int avgPulO = RoundAvg((int)sumPulO, cntO);
+
+        auto addRow = [&](int row, const wchar_t* bucket, int n, int s, int d, int p) {
+            LVITEMW it{}; it.mask = LVIF_TEXT; it.iItem = row; it.iSubItem = 0;
+            it.pszText = const_cast<wchar_t*>(bucket);
+            ListView_InsertItemW(hList, &it);
+
+            wchar_t buf[32];
+            swprintf_s(buf, L"%d", n); ListView_SetItemTextW(hList, row, 1, buf);
+            swprintf_s(buf, L"%d/%d", s, d); ListView_SetItemTextW(hList, row, 2, buf);
+            swprintf_s(buf, L"%d", p); ListView_SetItemTextW(hList, row, 3, buf);
+            };
+
+        int r = 0;
+        addRow(r++, L"Morning (00:00–11:59)", cntM, avgSysM, avgDiaM, avgPulM);
+        addRow(r++, L"Evening (12:00–23:59)", cntE, avgSysE, avgDiaE, avgPulE);
+        addRow(r++, L"Overall", cntO, avgSysO, avgDiaO, avgPulO);
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        ListView_SetColumnWidth(hList, i, LVSCW_AUTOSIZE_USEHEADER);
+    }
 }
 
 static void ShowReportAllWindow(HWND owner)
@@ -1975,6 +1925,189 @@ static LRESULT CALLBACK ReportDatesResultsWndProc(HWND hWnd, UINT msg, WPARAM wP
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
+// Replace the whole ReportDatesWndProc with this fixed version (removes duplicate case IDOK and handles OK in WM_COMMAND)
+static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    ReportDatesState* st = reinterpret_cast<ReportDatesState*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+    switch (msg)
+    {
+    case WM_CREATE:
+    {
+        st = new ReportDatesState();
+        st->hwnd = hWnd;
+        SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)st);
+
+        st->hFont = CreateUiFontForWindow(hWnd, 14, FW_SEMIBOLD, L"Segoe UI");
+        st->ownsFont = (st->hFont != nullptr);
+        if (!st->hFont) st->hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+
+        const int margin = 10;
+        const int ctlH = 24;
+
+        CreateWindowExW(0, L"STATIC", L"Start:",
+            WS_CHILD | WS_VISIBLE, margin, margin + 4, 45, ctlH, hWnd, nullptr, hInst, nullptr);
+
+        st->hStart = CreateWindowExW(0, DATETIMEPICK_CLASSW, L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | DTS_SHORTDATECENTURYFORMAT,
+            margin + 50, margin, 160, 24, hWnd, (HMENU)IDC_DATES_START, hInst, nullptr);
+
+        CreateWindowExW(0, L"STATIC", L"End:",
+            WS_CHILD | WS_VISIBLE, margin + 50 + 160 + 10, margin + 4, 35, ctlH, hWnd, nullptr, hInst, nullptr);
+
+        st->hEnd = CreateWindowExW(0, DATETIMEPICK_CLASSW, L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | DTS_SHORTDATECENTURYFORMAT,
+            margin + 50 + 160 + 10 + 40, margin, 160, 24, hWnd, (HMENU)IDC_DATES_END, hInst, nullptr);
+
+        st->hOk = CreateWindowExW(0, L"BUTTON", L"Refresh",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+            margin, 0, 80, 26, hWnd, (HMENU)IDOK, hInst, nullptr);
+
+        st->hCancel = CreateWindowExW(0, L"BUTTON", L"Close",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            margin, 0, 80, 26, hWnd, (HMENU)IDCANCEL, hInst, nullptr);
+
+        // Apply fonts
+        HWND cts[] = { st->hStart, st->hEnd, st->hOk, st->hCancel };
+        for (HWND c : cts) { if (c) SendMessageW(c, WM_SETFONT, (WPARAM)st->hFont, TRUE); }
+
+        // Initialize dates to today
+        GetLocalTime(&st->stStart);
+        st->stEnd = st->stStart;
+        DateTime_SetSystemtime(st->hStart, GDT_VALID, &st->stStart);
+        DateTime_SetSystemtime(st->hEnd, GDT_VALID, &st->stEnd);
+
+        // Ideal height for DTPs
+        SIZE ideal{};
+        if (st->hStart && SendMessageW(st->hStart, DTM_GETIDEALSIZE, 0, (LPARAM)&ideal)) {
+            st->dtpH = max(ideal.cy, 24);
+        }
+        if (st->hStart) SetWindowPos(st->hStart, nullptr, 0, 0, 160, st->dtpH, SWP_NOMOVE | SWP_NOZORDER);
+        if (st->hEnd)   SetWindowPos(st->hEnd, nullptr, 0, 0, 160, st->dtpH, SWP_NOMOVE | SWP_NOZORDER);
+
+        // Create ListView for results
+        st->hList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+            margin, margin * 3 + st->dtpH, 100, 100, hWnd, (HMENU)43060, hInst, nullptr);
+        if (st->hList) {
+            SendMessageW(st->hList, WM_SETFONT, (WPARAM)st->hFont, TRUE);
+            ListView_SetExtendedListViewStyle(st->hList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+
+            // Columns (insert once)
+            LVCOLUMNW col{}; col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+            struct ColDef { const wchar_t* text; int width; } cols[] = {
+                { L"Bucket",              160 },
+                { L"N",                    80 },
+                { L"Avg Sys/Avg Dia",     120 },
+                { L"Avg Pulse",           100 },
+            };
+            for (int i = 0; i < (int)(sizeof(cols) / sizeof(cols[0])); ++i) {
+                col.pszText = const_cast<wchar_t*>(cols[i].text);
+                col.cx = cols[i].width;
+                col.iSubItem = i;
+                ListView_InsertColumn(st->hList, i, &col);
+            }
+            st->listInit = true;
+        }
+
+        // Grow window to comfortable size
+        RECT rc{ 0,0, 760, 420 };
+        AdjustWindowRectEx(&rc, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
+        SetWindowPos(hWnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER);
+
+        // Place buttons bottom-right
+        RECT rcClient{}; GetClientRect(hWnd, &rcClient);
+        const int btnW = 80, btnH = 26;
+        if (st->hOk)     SetWindowPos(st->hOk, nullptr, rcClient.right - (btnW * 2 + margin * 2), rcClient.bottom - (btnH + margin), btnW, btnH, SWP_NOZORDER);
+        if (st->hCancel) SetWindowPos(st->hCancel, nullptr, rcClient.right - (btnW + margin), rcClient.bottom - (btnH + margin), btnW, btnH, SWP_NOZORDER);
+
+        // Initial data
+        FillDatesAveragesList(st->hList, st->stStart, st->stEnd);
+
+        CenterToOwner(hWnd, GetWindow(hWnd, GW_OWNER));
+        EnsureWindowOnScreen(hWnd);
+    }
+    return 0;
+
+    case WM_SIZE:
+    {
+        if (!st) break;
+        RECT rc{}; GetClientRect(hWnd, &rc);
+        const int margin = 10;
+        const int btnW = 80, btnH = 26;
+
+        // Reposition pickers
+        if (st->hStart) SetWindowPos(st->hStart, nullptr, margin + 50, margin, 160, st->dtpH, SWP_NOZORDER);
+        if (st->hEnd)   SetWindowPos(st->hEnd, nullptr, margin + 50 + 160 + 10 + 40, margin, 160, st->dtpH, SWP_NOZORDER);
+
+        // Buttons bottom-right
+        if (st->hOk)     SetWindowPos(st->hOk, nullptr, rc.right - (btnW * 2 + margin * 2), rc.bottom - (btnH + margin), btnW, btnH, SWP_NOZORDER);
+        if (st->hCancel) SetWindowPos(st->hCancel, nullptr, rc.right - (btnW + margin), rc.bottom - (btnH + margin), btnW, btnH, SWP_NOZORDER);
+
+        // List fills remaining space
+        if (st->hList) {
+            int top = margin * 2 + st->dtpH;
+            int listRight = rc.right - margin;
+            int listBottom = rc.bottom - (btnH + 2 * margin);
+            SetWindowPos(st->hList, nullptr, margin, top, listRight - margin, max(0, listBottom - top), SWP_NOZORDER);
+
+            for (int i = 0; i < 4; ++i) {
+                ListView_SetColumnWidth(st->hList, i, LVSCW_AUTOSIZE_USEHEADER);
+            }
+        }
+    }
+    return 0;
+
+    case WM_NOTIFY:
+        if (st) {
+            auto nm = reinterpret_cast<LPNMHDR>(lParam);
+            if ((nm->idFrom == IDC_DATES_START || nm->idFrom == IDC_DATES_END) && nm->code == DTN_DATETIMECHANGE) {
+                // Pull latest times and refresh
+                DateTime_GetSystemtime(st->hStart, &st->stStart);
+                DateTime_GetSystemtime(st->hEnd, &st->stEnd);
+                FillDatesAveragesList(st->hList, st->stStart, st->stEnd);
+                return 0;
+            }
+        }
+        break;
+
+    case WM_COMMAND:
+        switch (LOWORD(wParam))
+        {
+        case IDOK: // Refresh
+            if (st) {
+                DateTime_GetSystemtime(st->hStart, &st->stStart);
+                DateTime_GetSystemtime(st->hEnd, &st->stEnd);
+                FillDatesAveragesList(st->hList, st->stStart, st->stEnd);
+            }
+            return 0;
+
+        case IDCANCEL: // Close
+            DestroyWindow(hWnd);
+            return 0;
+        }
+        break;
+
+    case WM_DESTROY:
+    {
+        HWND owner = GetWindow(hWnd, GW_OWNER);
+        if (owner && IsWindow(owner)) {
+            EnableWindow(owner, TRUE);
+            ShowWindow(owner, SW_RESTORE);
+            SetForegroundWindow(owner);
+        }
+        return 0;
+    }
+    case WM_NCDESTROY:
+        if (st) {
+            if (st->ownsFont && st->hFont) { DeleteObject(st->hFont); st->hFont = nullptr; }
+            SetWindowLongPtrW(hWnd, GWLP_USERDATA, 0);
+            delete st;
+        }
+        return 0;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
 static void ShowReportDatesResultsWindow(HWND owner, const SYSTEMTIME& stStart, const SYSTEMTIME& stEnd)
 {
     static ATOM s_atom = 0;
@@ -2037,7 +2170,7 @@ static void ShowReportDatesWindow(HWND owner)
 
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
 
-    HWND hWnd = CreateWindowExW(WS_EX_DLGMODALFRAME,
+    HWND hWnd = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_COMPOSITED, // <-- add WS_EX_COMPOSITED
         L"BP_ReportDatesWindow", L"Report - By Dates",
         style,
         CW_USEDEFAULT, CW_USEDEFAULT, 620, 200,
