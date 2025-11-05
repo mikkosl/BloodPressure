@@ -49,7 +49,8 @@ LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 static void         CreateDatabaseDialog(HWND owner);
 static void         OpenDatabaseDialog(HWND owner);
-static void         CloseDatabaseDialog(HWND owner); // <-- add
+static void         CloseDatabaseDialog(HWND owner);
+static void         ShowReportAllWindow(HWND owner); // <-- add
 
 static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void ShowAddReadingDialog(HWND owner);
@@ -62,6 +63,52 @@ static bool PromptRowNumber(HWND owner, int& outRow);
 #define WIDEN(x) WIDEN2(x)
 #endif
 
+// Add near other helpers
+inline void EnsureWindowOnScreen(HWND hWnd)
+{
+    RECT rc;
+    if (!GetWindowRect(hWnd, &rc)) return;
+
+    HMONITOR mon = MonitorFromRect(&rc, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(mon, &mi)) return;
+
+    const int w = rc.right - rc.left;
+    const int h = rc.bottom - rc.top;
+
+    int x = rc.left;
+    int y = rc.top;
+
+    if (x < mi.rcWork.left) x = mi.rcWork.left;
+    if (y < mi.rcWork.top)  y = mi.rcWork.top;
+    if (x + w > mi.rcWork.right)  x = mi.rcWork.right - w;
+    if (y + h > mi.rcWork.bottom) y = mi.rcWork.bottom - h;
+
+    SetWindowPos(hWnd, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+}
+
+// Add near other helpers (below EnsureWindowOnScreen)
+static HFONT CreateUiFontForWindow(HWND hWnd, int pointSize, int weight = FW_SEMIBOLD, LPCWSTR face = L"Segoe UI")
+{
+    UINT dpiY = 96;
+    // Try GetDpiForWindow if available (runtime lookup for compatibility)
+    HMODULE hUser = GetModuleHandleW(L"user32.dll");
+    using GetDpiForWindow_t = UINT(WINAPI*)(HWND);
+    GetDpiForWindow_t pGetDpiForWindow = hUser ? (GetDpiForWindow_t)GetProcAddress(hUser, "GetDpiForWindow") : nullptr;
+    if (pGetDpiForWindow) {
+        dpiY = pGetDpiForWindow(hWnd);
+    }
+    else {
+        HDC hdc = GetDC(hWnd);
+        if (hdc) { dpiY = GetDeviceCaps(hdc, LOGPIXELSY); ReleaseDC(hWnd, hdc); }
+    }
+    const int height = -MulDiv(pointSize, dpiY, 72); // point size to pixels
+    return CreateFontW(height, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                       OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                       VARIABLE_PITCH, face);
+}
+
 static std::wstring GetDatabasePath()
 {
     // Use the directory of this source file (i.e., the project folder)
@@ -71,6 +118,35 @@ static std::wstring GetDatabasePath()
     if (pos != std::wstring::npos)
         dir.erase(pos + 1);
     return dir + L"BloodPressure.db";
+}
+
+// Helpers to compute local time from UTC ISO and averages
+static bool TryParseUtcIsoToLocalTm(const std::wstring& isoUtc, std::tm& outLocal)
+{
+    int Y=0,M=0,D=0,h=0,m=0,s=0;
+    if (swscanf_s(isoUtc.c_str(), L"%d-%d-%dT%d:%d:%d", &Y, &M, &D, &h, &m, &s) != 6)
+        return false;
+
+    std::tm tmUtc{};
+    tmUtc.tm_year = Y - 1900;
+    tmUtc.tm_mon  = M - 1;
+    tmUtc.tm_mday = D;
+    tmUtc.tm_hour = h;
+    tmUtc.tm_min  = m;
+    tmUtc.tm_sec  = s;
+
+    time_t t = _mkgmtime(&tmUtc);
+    if (t == (time_t)-1) return false;
+
+    std::tm tmLocal{};
+    if (localtime_s(&tmLocal, &t) != 0) return false;
+    outLocal = tmLocal;
+    return true;
+}
+
+static int RoundAvg(int sum, int count)
+{
+    return (count > 0) ? (sum + (count / 2)) / count : 0; // integer round to nearest
 }
 
 // Parse "YYYY-MM-DDTHH:MM:SSZ" (UTC) and format as local time "YYYY-MM-DD HH:MM"
@@ -278,6 +354,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 }
             }
             break;
+            case IDM_REPORTALL: // <-- add
+                ShowReportAllWindow(hWnd);
+                break;
             default:
                 return DefWindowProc(hWnd, message, wParam, lParam);
             }
@@ -329,6 +408,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 //Header
                 HFONT hMono = (HFONT)GetStockObject(SYSTEM_FIXED_FONT);
                 HGDIOBJ oldFont = SelectObject(hdc, hMono);
+                wchar_t dateHeader[] = L"Date (Local)";
                 const wchar_t* header = L"No  Date (Local)      Sys/Dia Pul  Note";
                 TextOutW(hdc, 10, y, header, lstrlenW(header));
                 y += 17;
@@ -410,8 +490,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         break;
     case WM_DESTROY:
-        PostQuitMessage(0);
-        break;
+        {
+            HWND owner = GetParent(hWnd);
+            if (owner && IsWindow(owner)) {
+                EnableWindow(owner, TRUE);
+                ShowWindow(owner, SW_RESTORE);
+                SetForegroundWindow(owner);
+            }
+            return 0;
+        }
     default:
         return DefWindowProc(hWnd, message, wParam, lParam);
     }
@@ -1099,4 +1186,225 @@ static void CloseDatabaseDialog(HWND owner)
         InvalidateRect(g_mainWnd, nullptr, TRUE);
 
     MessageBoxW(owner, L"Database closed.", szTitle, MB_OK | MB_ICONINFORMATION);
+}
+
+// ------------------------------
+// Report All Readings window
+// ------------------------------
+struct ReportAllState
+{
+    HWND hwnd{};
+    HFONT hFont{};
+    bool ownsFont{}; // track if we created the font
+    std::vector<std::wstring> lines; // text to paint
+};
+
+// ------------------------------
+// Report All Readings window (averages view)
+// ------------------------------
+
+// New time buckets: Morning = 00:00–11:59, Evening = 12:00–23:59 (local time)
+static bool IsMorningHour(int hour) { return hour >= 0 && hour <= 11; }
+static bool IsEveningHour(int hour) { return hour >= 12 && hour <= 23; }
+
+static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    ReportAllState* st = reinterpret_cast<ReportAllState*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+    switch (msg)
+    {
+    case WM_CREATE:
+    {
+        st = new ReportAllState();
+        SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)st);
+
+        // Larger, clearer UI font (DPI-aware), fallback to DEFAULT_GUI_FONT
+        st->hFont = CreateUiFontForWindow(hWnd, 14, FW_SEMIBOLD, L"Segoe UI");
+        st->ownsFont = (st->hFont != nullptr);
+        if (!st->hFont) st->hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+
+        // Build average lines
+        st->lines.clear();
+        st->lines.push_back(L"Averages (local time):");
+        st->lines.push_back(L"  Morning  = 00:00–11:59");
+        st->lines.push_back(L"  Evening  = 12:00–23:59");
+        st->lines.push_back(L"");
+
+        if (!g_db) {
+            st->lines.push_back(L"No database is open.");
+        } else {
+            int totalCount = 0;
+            if (!g_db->GetReadingCount(totalCount) || totalCount == 0) {
+                st->lines.push_back(L"No readings yet.");
+            } else {
+                std::vector<Reading> readings;
+                if (g_db->GetAllReadings(readings)) {
+                    long sumSysM = 0, sumDiaM = 0, sumPulM = 0, cntM = 0;
+                    long sumSysE = 0, sumDiaE = 0, sumPulE = 0, cntE = 0;
+                    long sumSysO = 0, sumDiaO = 0, sumPulO = 0, cntO = 0;
+
+                    for (const auto& r : readings) {
+                        std::tm local{};
+                        if (!TryParseUtcIsoToLocalTm(r.tsUtc, local)) continue;
+
+                        // overall
+                        sumSysO += r.systolic;
+                        sumDiaO += r.diastolic;
+                        sumPulO += r.pulse;
+                        ++cntO;
+
+                        // morning/evening
+                        if (IsMorningHour(local.tm_hour)) {
+                            sumSysM += r.systolic;
+                            sumDiaM += r.diastolic;
+                            sumPulM += r.pulse;
+                            ++cntM;
+                        } else if (IsEveningHour(local.tm_hour)) {
+                            sumSysE += r.systolic;
+                            sumDiaE += r.diastolic;
+                            sumPulE += r.pulse;
+                            ++cntE;
+                        }
+                    }
+
+                    auto mkLine = [](const wchar_t* title, int n, int aSys, int aDia, int aPulse) {
+                        std::wstring s = title;
+                        s += L":  N=" + std::to_wstring(n)
+                           + L"  Avg Sys/Dia=" + std::to_wstring(aSys) + L"/" + std::to_wstring(aDia)
+                           + L"  Avg Pulse=" + std::to_wstring(aPulse);
+                        return s;
+                    };
+
+                    const int avgSysM = RoundAvg((int)sumSysM, (int)cntM);
+                    const int avgDiaM = RoundAvg((int)sumDiaM, (int)cntM);
+                    const int avgPulM = RoundAvg((int)sumPulM, (int)cntM);
+
+                    const int avgSysE = RoundAvg((int)sumSysE, (int)cntE);
+                    const int avgDiaE = RoundAvg((int)sumDiaE, (int)cntE);
+                    const int avgPulE = RoundAvg((int)sumPulE, (int)cntE);
+
+                    const int avgSysO = RoundAvg((int)sumSysO, (int)cntO);
+                    const int avgDiaO = RoundAvg((int)sumDiaO, (int)cntO);
+                    const int avgPulO = RoundAvg((int)sumPulO, (int)cntO);
+
+                    st->lines.push_back(mkLine(L"- Morning", (int)cntM, avgSysM, avgDiaM, avgPulM));
+                    st->lines.push_back(mkLine(L"- Evening", (int)cntE, avgSysE, avgDiaE, avgPulE));
+                    st->lines.push_back(mkLine(L"- Overall", (int)cntO, avgSysO, avgDiaO, avgPulO));
+                } else {
+                    st->lines.push_back(L"Failed to load readings.");
+                }
+            }
+        }
+
+        // Close button
+        const int margin = 10;
+        HWND hClose = CreateWindowExW(0, L"BUTTON", L"Close",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+            margin, 0, 80, 26, hWnd, (HMENU)IDCLOSE, hInst, nullptr);
+        SendMessageW(hClose, WM_SETFONT, (WPARAM)st->hFont, TRUE);
+
+        // Size window and place button
+        RECT rc{ 0,0, 620, 240 };
+        AdjustWindowRectEx(&rc, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
+        SetWindowPos(hWnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER);
+
+        RECT rcClient{};
+        GetClientRect(hWnd, &rcClient);
+        SetWindowPos(hClose, nullptr, rcClient.right - 90, rcClient.bottom - 36, 80, 26, SWP_NOZORDER);
+
+        // Center to owner: use GW_OWNER for top-level owned windows
+        CenterToOwner(hWnd, GetWindow(hWnd, GW_OWNER));
+        EnsureWindowOnScreen(hWnd);
+    }
+    return 0;
+
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDCLOSE)
+        {
+            DestroyWindow(hWnd);
+            return 0;
+        }
+        break;
+
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hWnd, &ps);
+        HGDIOBJ old = SelectObject(hdc, st ? st->hFont : GetStockObject(DEFAULT_GUI_FONT));
+
+        // Use text metrics to space lines appropriately for the larger font
+        TEXTMETRICW tm{};
+        GetTextMetricsW(hdc, &tm);
+        const int lineStep = tm.tmHeight + tm.tmExternalLeading + 6;
+
+        int y = 10;
+        const int x = 10;
+        if (st) {
+            for (const auto& line : st->lines) {
+                TextOutW(hdc, x, y, line.c_str(), (int)line.size());
+                y += lineStep;
+            }
+        }
+
+        SelectObject(hdc, old);
+        EndPaint(hWnd, &ps);
+    }
+    return 0;
+
+    case WM_DISPLAYCHANGE:
+        EnsureWindowOnScreen(hWnd);
+        return 0;
+
+    case WM_DESTROY:
+    {
+        // Re-enable the real owner (GetParent returns NULL for owned top-level windows)
+        HWND owner = GetWindow(hWnd, GW_OWNER);
+        if (owner && IsWindow(owner)) {
+            EnableWindow(owner, TRUE);
+            ShowWindow(owner, SW_RESTORE);
+            SetForegroundWindow(owner);
+        }
+        return 0;
+    }
+
+    case WM_NCDESTROY:
+        if (st) {
+            if (st->ownsFont && st->hFont) {
+                DeleteObject(st->hFont);
+                st->hFont = nullptr;
+            }
+            SetWindowLongPtrW(hWnd, GWLP_USERDATA, 0);
+            delete st;
+        }
+        return 0;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+static void ShowReportAllWindow(HWND owner)
+{
+    static ATOM s_atom = 0;
+    if (!s_atom)
+    {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.style = CS_DBLCLKS;
+        wc.lpfnWndProc = ReportAllWndProc;
+        wc.hInstance = hInst;
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"BP_ReportAllDialog";
+        s_atom = RegisterClassExW(&wc);
+    }
+
+    HWND hDlg = CreateWindowExW(WS_EX_DLGMODALFRAME,
+        L"BP_ReportAllDialog", L"Blood Pressure Averages",
+        WS_CAPTION | WS_SYSMENU,
+        CW_USEDEFAULT, CW_USEDEFAULT, 620, 260,
+        owner, nullptr, hInst, nullptr);
+    if (!hDlg) return;
+
+    EnableWindow(owner, FALSE);
+    ShowWindow(hDlg, SW_SHOW);
+    UpdateWindow(hDlg);
 }

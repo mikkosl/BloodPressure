@@ -25,8 +25,11 @@ public:
     bool AddReading(int systolic, int diastolic, int pulse, const wchar_t* note);
     bool UpdateReading(int id, int systolic, int diastolic, int pulse, const wchar_t* note);
     bool DeleteReading(int id);
-    bool DeleteAllReadings(); // <-- add
+    bool DeleteAllReadings();
     bool GetReadingCount(int& outCount) const;
+
+    // New: fetch all readings (ordered by timestamp desc)
+    bool GetAllReadings(std::vector<Reading>& out) const; // <-- add
 
     // New: fetch most recent readings (ordered by timestamp desc)
     bool GetRecentReadings(int limit, std::vector<Reading>& out) const;
@@ -41,5 +44,6 @@ private:
 
 private:
     std::wstring dbPath_;
-    sqlite3* db_{ nullptr };
+    sqlite3* db_{ nullptr };    
 };
+
