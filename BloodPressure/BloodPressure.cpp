@@ -1,11 +1,14 @@
 // BloodPressure.cpp : Defines the entry point for the application.
 //
+
 #include "framework.h"
 #include "BloodPressure.h"
 #include "Database.h"
 
 #include <commdlg.h>
+#include <commctrl.h>
 #pragma comment(lib, "Comdlg32.lib")
+#pragma comment(lib, "Comctl32.lib")
 
 #include <memory>
 #include <string>
@@ -17,6 +20,24 @@
 #include <windows.h>
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "Ole32.lib")
+
+// Replace your ListView_SetItemTextW macro with this safer wrapper:
+#ifndef ListView_SetItemTextW
+static inline void LV_SetItemTextW(HWND hwndLV, int i, int iSub, const wchar_t* text)
+{
+    LVITEMW lvi{};
+    lvi.iSubItem = iSub;
+    lvi.pszText = const_cast<LPWSTR>(text);
+    SendMessageW(hwndLV, LVM_SETITEMTEXTW, (WPARAM)i, (LPARAM)&lvi);
+}
+#define ListView_SetItemTextW(hwndLV, i, iSub, pszText) LV_SetItemTextW((hwndLV), (i), (iSub), (pszText))
+#endif
+
+// Add this macro near the top of your file, after including <commctrl.h>:
+#ifndef ListView_InsertItemW
+#define ListView_InsertItemW(hwndLV, pitem) \
+    (int)SendMessageW((hwndLV), LVM_INSERTITEMW, 0, (LPARAM)(const LVITEMW *)(pitem))
+#endif
 
 #define MAX_LOADSTRING 100
 
@@ -184,6 +205,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 {
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
+
+    // Init Common Controls for ListView table
+    INITCOMMONCONTROLSEX icc{};
+    icc.dwSize = sizeof(icc);
+    icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES;
+    InitCommonControlsEx(&icc);
 
     // Initialize COM (for SHGetKnownFolderPath)
     HRESULT hrCoInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -490,15 +517,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         break;
     case WM_DESTROY:
-        {
-            HWND owner = GetParent(hWnd);
-            if (owner && IsWindow(owner)) {
-                EnableWindow(owner, TRUE);
-                ShowWindow(owner, SW_RESTORE);
-                SetForegroundWindow(owner);
-            }
-            return 0;
+    {
+        // If this window had an owner (rare for the main window), re-enable it.
+        HWND owner = GetWindow(hWnd, GW_OWNER);
+        if (owner && IsWindow(owner)) {
+            EnableWindow(owner, TRUE);
+            ShowWindow(owner, SW_RESTORE);
+            SetForegroundWindow(owner);
         }
+        PostQuitMessage(0); // <-- make the message loop exit so the process can terminate
+        return 0;
+    }
     default:
         return DefWindowProc(hWnd, message, wParam, lParam);
     }
@@ -1196,14 +1225,16 @@ struct ReportAllState
     HWND hwnd{};
     HFONT hFont{};
     bool ownsFont{}; // track if we created the font
-    std::vector<std::wstring> lines; // text to paint
+    HWND hList{};    // ListView (table)
+    HWND hClose{};   // Close button
+    std::vector<std::wstring> lines; // fallback text to paint (no data)
 };
 
 // ------------------------------
 // Report All Readings window (averages view)
 // ------------------------------
 
-// New time buckets: Morning = 00:00–11:59, Evening = 12:00–23:59 (local time)
+// New time buckets : Morning = 00 : 00–11 : 59, Evening = 12 : 00–23 : 59 (local time)
 static bool IsMorningHour(int hour) { return hour >= 0 && hour <= 11; }
 static bool IsEveningHour(int hour) { return hour >= 12 && hour <= 23; }
 
@@ -1215,6 +1246,7 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
     case WM_CREATE:
     {
         st = new ReportAllState();
+        st->hwnd = hWnd;
         SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)st);
 
         // Larger, clearer UI font (DPI-aware), fallback to DEFAULT_GUI_FONT
@@ -1222,103 +1254,206 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         st->ownsFont = (st->hFont != nullptr);
         if (!st->hFont) st->hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 
-        // Build average lines
-        st->lines.clear();
-        st->lines.push_back(L"Averages (local time):");
-        st->lines.push_back(L"  Morning  = 00:00–11:59");
-        st->lines.push_back(L"  Evening  = 12:00–23:59");
-        st->lines.push_back(L"");
+        // Compute averages
+        bool hasData = false;
+        int cntM = 0, cntE = 0, cntO = 0;
+        int avgSysM = 0, avgDiaM = 0, avgPulM = 0;
+        int avgSysE = 0, avgDiaE = 0, avgPulE = 0;
+        int avgSysO = 0, avgDiaO = 0, avgPulO = 0;
 
+        st->lines.clear();
         if (!g_db) {
             st->lines.push_back(L"No database is open.");
-        } else {
+        }
+        else {
             int totalCount = 0;
             if (!g_db->GetReadingCount(totalCount) || totalCount == 0) {
                 st->lines.push_back(L"No readings yet.");
-            } else {
+            }
+            else {
                 std::vector<Reading> readings;
                 if (g_db->GetAllReadings(readings)) {
-                    long sumSysM = 0, sumDiaM = 0, sumPulM = 0, cntM = 0;
-                    long sumSysE = 0, sumDiaE = 0, sumPulE = 0, cntE = 0;
-                    long sumSysO = 0, sumDiaO = 0, sumPulO = 0, cntO = 0;
+                    long sumSysM = 0, sumDiaM = 0, sumPulM = 0;
+                    long sumSysE = 0, sumDiaE = 0, sumPulE = 0;
+                    long sumSysO = 0, sumDiaO = 0, sumPulO = 0;
 
                     for (const auto& r : readings) {
                         std::tm local{};
                         if (!TryParseUtcIsoToLocalTm(r.tsUtc, local)) continue;
 
-                        // overall
-                        sumSysO += r.systolic;
-                        sumDiaO += r.diastolic;
-                        sumPulO += r.pulse;
-                        ++cntO;
+                        sumSysO += r.systolic; sumDiaO += r.diastolic; sumPulO += r.pulse; ++cntO;
 
-                        // morning/evening
                         if (IsMorningHour(local.tm_hour)) {
-                            sumSysM += r.systolic;
-                            sumDiaM += r.diastolic;
-                            sumPulM += r.pulse;
-                            ++cntM;
-                        } else if (IsEveningHour(local.tm_hour)) {
-                            sumSysE += r.systolic;
-                            sumDiaE += r.diastolic;
-                            sumPulE += r.pulse;
-                            ++cntE;
+                            sumSysM += r.systolic; sumDiaM += r.diastolic; sumPulM += r.pulse; ++cntM;
+                        }
+                        else if (IsEveningHour(local.tm_hour)) {
+                            sumSysE += r.systolic; sumDiaE += r.diastolic; sumPulE += r.pulse; ++cntE;
                         }
                     }
 
-                    auto mkLine = [](const wchar_t* title, int n, int aSys, int aDia, int aPulse) {
-                        std::wstring s = title;
-                        s += L":  N=" + std::to_wstring(n)
-                           + L"  Avg Sys/Dia=" + std::to_wstring(aSys) + L"/" + std::to_wstring(aDia)
-                           + L"  Avg Pulse=" + std::to_wstring(aPulse);
-                        return s;
-                    };
+                    avgSysM = RoundAvg((int)sumSysM, cntM);
+                    avgDiaM = RoundAvg((int)sumDiaM, cntM);
+                    avgPulM = RoundAvg((int)sumPulM, cntM);
 
-                    const int avgSysM = RoundAvg((int)sumSysM, (int)cntM);
-                    const int avgDiaM = RoundAvg((int)sumDiaM, (int)cntM);
-                    const int avgPulM = RoundAvg((int)sumPulM, (int)cntM);
+                    avgSysE = RoundAvg((int)sumSysE, cntE);
+                    avgDiaE = RoundAvg((int)sumDiaE, cntE);
+                    avgPulE = RoundAvg((int)sumPulE, cntE);
 
-                    const int avgSysE = RoundAvg((int)sumSysE, (int)cntE);
-                    const int avgDiaE = RoundAvg((int)sumDiaE, (int)cntE);
-                    const int avgPulE = RoundAvg((int)sumPulE, (int)cntE);
+                    avgSysO = RoundAvg((int)sumSysO, cntO);
+                    avgDiaO = RoundAvg((int)sumDiaO, cntO);
+                    avgPulO = RoundAvg((int)sumPulO, cntO);
 
-                    const int avgSysO = RoundAvg((int)sumSysO, (int)cntO);
-                    const int avgDiaO = RoundAvg((int)sumDiaO, (int)cntO);
-                    const int avgPulO = RoundAvg((int)sumPulO, (int)cntO);
-
-                    st->lines.push_back(mkLine(L"- Morning", (int)cntM, avgSysM, avgDiaM, avgPulM));
-                    st->lines.push_back(mkLine(L"- Evening", (int)cntE, avgSysE, avgDiaE, avgPulE));
-                    st->lines.push_back(mkLine(L"- Overall", (int)cntO, avgSysO, avgDiaO, avgPulO));
-                } else {
+                    hasData = true;
+                }
+                else {
                     st->lines.push_back(L"Failed to load readings.");
                 }
             }
         }
 
-        // Close button
+        // OK button
         const int margin = 10;
-        HWND hClose = CreateWindowExW(0, L"BUTTON", L"Close",
+        st->hClose = CreateWindowExW(0, L"BUTTON", L"OK",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-            margin, 0, 80, 26, hWnd, (HMENU)IDCLOSE, hInst, nullptr);
-        SendMessageW(hClose, WM_SETFONT, (WPARAM)st->hFont, TRUE);
+            margin, 0, 80, 26, hWnd, (HMENU)IDOK, hInst, nullptr);
+        if (!st->hClose) {
+            DWORD err = GetLastError();
+            wchar_t msg[128];
+            swprintf_s(msg, L"OK button creation failed (err=%lu).", err);
+            MessageBoxW(hWnd, msg, szTitle, MB_OK | MB_ICONERROR);
+        } else {
+            SendMessageW(st->hClose, WM_SETFONT, (WPARAM)st->hFont, TRUE);
+            ShowWindow(st->hClose, SW_SHOW);
+        }
 
-        // Size window and place button
-        RECT rc{ 0,0, 620, 240 };
+        // ListView (table) for the averages
+        st->hList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+            margin, margin, 100, 100, hWnd, (HMENU)42001, hInst, nullptr);
+        if (!st->hList) {
+            DWORD err = GetLastError();
+            wchar_t msg[128];
+            swprintf_s(msg, L"ListView creation failed (err=%lu).", err);
+            MessageBoxW(hWnd, msg, szTitle, MB_OK | MB_ICONERROR);
+        } else {
+            SendMessageW(st->hList, WM_SETFONT, (WPARAM)st->hFont, TRUE);
+            ListView_SetExtendedListViewStyle(st->hList,
+                LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+
+            // Columns: Bucket | N | Avg Sys | Avg Dia | Avg Pulse
+            LVCOLUMNW col{};
+            col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+
+            struct ColDef { const wchar_t* text; int width; } cols[] = {
+                { L"Bucket",   160 },
+                { L"N",         80 },
+                { L"Avg Sys/Avg Dia",  100 },
+                { L"Avg Pulse", 100 },
+            };
+            for (int i = 0; i < (int)(sizeof(cols) / sizeof(cols[0])); ++i) {
+                col.pszText = const_cast<wchar_t*>(cols[i].text);
+                col.cx = cols[i].width;
+                col.iSubItem = i;
+                ListView_InsertColumn(st->hList, i, &col);
+            }
+
+            if (hasData) {
+                auto addRow = [&](int row, const wchar_t* bucket, int n, int s, int d, int p) {
+                    LVITEMW it{};
+                    it.mask = LVIF_TEXT;
+                    it.iItem = row;
+                    it.iSubItem = 0;
+                    it.pszText = const_cast<wchar_t*>(bucket);
+                    ListView_InsertItemW(st->hList, &it);
+
+                    wchar_t buf[32];
+                    swprintf_s(buf, L"%d", n);
+                    ListView_SetItemTextW(st->hList, row, 1, buf);
+                    swprintf_s(buf, L"%d/%d", s, d);
+                    ListView_SetItemTextW(st->hList, row, 2, buf);
+                    swprintf_s(buf, L"%d", p);
+                    ListView_SetItemTextW(st->hList, row, 3, buf);
+                    };
+
+                int r = 0;
+                addRow(r++, L"Morning (00:00–11:59)", cntM, avgSysM, avgDiaM, avgPulM);
+                addRow(r++, L"Evening (12:00–23:59)", cntE, avgSysE, avgDiaE, avgPulE);
+                addRow(r++, L"Overall", cntO, avgSysO, avgDiaO, avgPulO);
+            }
+            else if (st->hList) {
+                LVITEMW it{};
+                it.mask = LVIF_TEXT;
+                it.iItem = 0;
+                it.iSubItem = 0;
+                it.pszText = const_cast<wchar_t*>(L"No data");
+                ListView_InsertItemW(st->hList, &it);
+            }
+        }
+
+        // New: auto-size columns to ensure header/content appear even if initial size is small:
+        if (st->hList) {
+            for (int i = 0; i < 5; ++i) {
+                ListView_SetColumnWidth(st->hList, i, LVSCW_AUTOSIZE_USEHEADER);
+            }
+            InvalidateRect(st->hList, nullptr, TRUE);
+            UpdateWindow(st->hList);
+        }
+
+        // Initial window size and control layout
+        RECT rc{ 0,0, 620, 280 };
         AdjustWindowRectEx(&rc, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
-        SetWindowPos(hWnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER);
+        SetWindowPos(hWnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER);
 
+        // Place controls
         RECT rcClient{};
         GetClientRect(hWnd, &rcClient);
-        SetWindowPos(hClose, nullptr, rcClient.right - 90, rcClient.bottom - 36, 80, 26, SWP_NOZORDER);
+        const int btnW = 80, btnH = 26;
+        if (st->hClose) {
+            SetWindowPos(st->hClose, nullptr, rcClient.right - (btnW + margin), rcClient.bottom - (btnH + margin),
+                btnW, btnH, SWP_NOZORDER);
+        }
+        if (st->hList) {
+            int listRight = rcClient.right - margin;
+            int listBottom = (st->hClose ? (rcClient.bottom - (btnH + 2 * margin)) : (rcClient.bottom - margin));
+            SetWindowPos(st->hList, nullptr, margin, margin,
+                listRight - margin, listBottom - margin, SWP_NOZORDER);
+        }
 
-        // Center to owner: use GW_OWNER for top-level owned windows
+        // Center and keep on-screen
         CenterToOwner(hWnd, GetWindow(hWnd, GW_OWNER));
         EnsureWindowOnScreen(hWnd);
+        RedrawWindow(hWnd, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    }
+    return 0;
+
+    case WM_SIZE:
+    {
+        if (!st) break;
+        RECT rc{};
+        GetClientRect(hWnd, &rc);
+        const int margin = 10;
+        const int btnW = 80, btnH = 26;
+        if (st->hClose) {
+            SetWindowPos(st->hClose, nullptr, rc.right - (btnW + margin), rc.bottom - (btnH + margin),
+                btnW, btnH, SWP_NOZORDER);
+        }
+        if (st->hList) {
+            int listRight = rc.right - margin;
+            int listBottom = (st->hClose ? (rc.bottom - (btnH + 2 * margin)) : (rc.bottom - margin));
+            SetWindowPos(st->hList, nullptr, margin, margin,
+                listRight - margin, listBottom - margin, SWP_NOZORDER);
+
+            // Optional: auto-size columns to header/content
+            for (int i = 0; i < 5; ++i) {
+                ListView_SetColumnWidth(st->hList, i, (i == 0) ? LVSCW_AUTOSIZE_USEHEADER : LVSCW_AUTOSIZE_USEHEADER);
+            }
+        }
     }
     return 0;
 
     case WM_COMMAND:
-        if (LOWORD(wParam) == IDCLOSE)
+        if (LOWORD(wParam) == IDOK)
         {
             DestroyWindow(hWnd);
             return 0;
@@ -1327,21 +1462,23 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
 
     case WM_PAINT:
     {
+        // If table exists and is visible, no need to paint fallback text
+        if (st && st->hList && IsWindowVisible(st->hList)) {
+            ValidateRect(hWnd, nullptr);
+            return 0;
+        }
+
+        // Fallback text (e.g., no DB/no data)
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hWnd, &ps);
         HGDIOBJ old = SelectObject(hdc, st ? st->hFont : GetStockObject(DEFAULT_GUI_FONT));
-
-        // Use text metrics to space lines appropriately for the larger font
-        TEXTMETRICW tm{};
-        GetTextMetricsW(hdc, &tm);
-        const int lineStep = tm.tmHeight + tm.tmExternalLeading + 6;
 
         int y = 10;
         const int x = 10;
         if (st) {
             for (const auto& line : st->lines) {
                 TextOutW(hdc, x, y, line.c_str(), (int)line.size());
-                y += lineStep;
+                y += 20;
             }
         }
 
@@ -1356,7 +1493,6 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
 
     case WM_DESTROY:
     {
-        // Re-enable the real owner (GetParent returns NULL for owned top-level windows)
         HWND owner = GetWindow(hWnd, GW_OWNER);
         if (owner && IsWindow(owner)) {
             EnableWindow(owner, TRUE);
@@ -1397,14 +1533,25 @@ static void ShowReportAllWindow(HWND owner)
         s_atom = RegisterClassExW(&wc);
     }
 
+    // Explicit top-level style to avoid any creation edge-cases
+    const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU
+                      | WS_CLIPCHILDREN | WS_CLIPSIBLINGS; // <-- add
+
     HWND hDlg = CreateWindowExW(WS_EX_DLGMODALFRAME,
         L"BP_ReportAllDialog", L"Blood Pressure Averages",
-        WS_CAPTION | WS_SYSMENU,
+        style,
         CW_USEDEFAULT, CW_USEDEFAULT, 620, 260,
         owner, nullptr, hInst, nullptr);
-    if (!hDlg) return;
+    if (!hDlg) {
+        DWORD err = GetLastError();
+        wchar_t msg[128];
+        swprintf_s(msg, L"Report window creation failed (err=%lu).", err);
+        MessageBoxW(owner, msg, szTitle, MB_OK | MB_ICONERROR);
+        return;
+    }
 
     EnableWindow(owner, FALSE);
     ShowWindow(hDlg, SW_SHOW);
     UpdateWindow(hDlg);
 }
+
