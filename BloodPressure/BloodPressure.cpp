@@ -22,13 +22,9 @@
 #define IDC_EDIT_DIASTOLIC 41002
 #define IDC_EDIT_PULSE     41003
 #define IDC_EDIT_NOTE      41004
+#define IDM_PAGE_PREV      40005
+#define IDM_PAGE_NEXT      40006
 
-/* Menu command IDs
-#define IDM_ABOUT          40001
-#define IDM_ADD            40002
-#define IDM_EDITROW        40003
-#define IDM_EXIT           40004
-*/
 // Global Variables:
 HINSTANCE hInst;                                // current instance
 WCHAR szTitle[MAX_LOADSTRING];                  // The title bar text
@@ -37,6 +33,9 @@ WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
 static std::unique_ptr<Database> g_db;
 static HWND g_mainWnd = nullptr;                // new: remember main window
 static int g_rowPromptResult = -1;
+
+static int g_pageIndex = 0;
+static constexpr int kPageSize = 20;
 
 // Forward declarations:
 ATOM                MyRegisterClass(HINSTANCE hInstance);
@@ -220,7 +219,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     {
                         // Fetch the same recent list used for display
                         std::vector<Reading> rows;
-                        if (g_db && g_db->GetRecentReadings(50, rows) && row <= (int)rows.size())
+                        if (g_db && g_db->GetRecentReadingsPage(kPageSize, g_pageIndex * kPageSize, rows) && row <= (int)rows.size())
                         {
                             ShowEditReadingDialog(hWnd, rows[row - 1]);
                             InvalidateRect(hWnd, nullptr, TRUE);
@@ -235,6 +234,25 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             case IDM_EXIT:
                 DestroyWindow(hWnd);
                 break;
+            case IDM_PAGE_PREV:
+            {
+                if (g_pageIndex > 0) {
+                    --g_pageIndex;
+                    InvalidateRect(hWnd, nullptr, TRUE);
+                }
+            }
+            break;
+            case IDM_PAGE_NEXT:
+            {
+                int total = 0;
+                if (g_db && g_db->GetReadingCount(total)) {
+                    if ((g_pageIndex + 1) * kPageSize < total) {
+                        ++g_pageIndex;
+                        InvalidateRect(hWnd, nullptr, TRUE);
+                    }
+                }
+            }
+            break;
             default:
                 return DefWindowProc(hWnd, message, wParam, lParam);
             }
@@ -247,7 +265,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             if (hMenu)
             {
                 AppendMenuW(hMenu, MF_STRING, IDM_ADD, L"Add Reading...");
-                AppendMenuW(hMenu, MF_STRING, IDM_EDIT, L"Edit Row...");
+                AppendMenuW(hMenu, MF_STRING, IDM_EDIT, L"Edit Reading...");
+                // Paging controls
+                AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+                int total = 0;
+                bool hasTotal = g_db && g_db->GetReadingCount(total);
+                bool canPrev = g_pageIndex > 0;
+                bool canNext = hasTotal && ((g_pageIndex + 1) * kPageSize < total);
+
+                AppendMenuW(hMenu, MF_STRING | (canPrev ? 0 : MF_GRAYED), IDM_PAGE_PREV, L"Previous Page");
+                AppendMenuW(hMenu, MF_STRING | (canNext ? 0 : MF_GRAYED), IDM_PAGE_NEXT, L"Next Page");
                 POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 ClientToScreen(hWnd, &pt);
                 TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_LEFTALIGN, pt.x, pt.y, 0, hWnd, nullptr);
@@ -255,6 +282,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             }
         }
         break;
+    case WM_KEYDOWN:
+        if (wParam == VK_PRIOR) { // PageUp
+            SendMessage(hWnd, WM_COMMAND, IDM_PAGE_PREV, 0);
+            return 0;
+        }
+        if (wParam == VK_NEXT) { // PageDown
+            SendMessage(hWnd, WM_COMMAND, IDM_PAGE_NEXT, 0);
+            return 0;
+        }
+        break; 
     case WM_PAINT:
         {
             PAINTSTRUCT ps;
@@ -278,7 +315,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
                 // Rows: last 50 readings
                 std::vector<Reading> rows;
-                if (g_db->GetRecentReadings(50, rows))
+                if (g_db && g_db->GetRecentReadingsPage(kPageSize, g_pageIndex * kPageSize, rows))
                 {
                    int idx = 1;
                     for (const auto& r : rows)
@@ -312,12 +349,34 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                         TextOutW(hdc, 10, y, none, lstrlenW(none));
                         y += 18;
                     }
+                    // After drawing rows, optionally show page indicator
+                    int total = 0;
+                    if (g_db->GetReadingCount(total))
+                    {
+                        std::wstring pageInfo = L"Page " + std::to_wstring(g_pageIndex + 1) +
+                                                L" of " + std::to_wstring((total + kPageSize - 1) / kPageSize) +
+                                                L" (" + std::to_wstring(total) + L" total)";
+                        TextOutW(hdc, 10, y, pageInfo.c_str(), (int)pageInfo.size());
+                        y += 18;
+                    }
                 }
                 else
                 {
                     const wchar_t* errRows = L"Failed to load readings.";
                     TextOutW(hdc, 10, y, errRows, lstrlenW(errRows));
                     y += 18;
+                }
+
+                // Footer: paging info
+                {
+                    std::vector<Reading> allRows;
+                    if (g_db->GetRecentReadings(50, allRows))
+                    {
+                        int totalRows = (int)allRows.size();
+                        int totalPages = (totalRows + kPageSize - 1) / kPageSize;
+                        std::wstring footer = L"Page " + std::to_wstring(g_pageIndex + 1) + L" / " + std::to_wstring(totalPages);
+                        TextOutW(hdc, 10, y, footer.c_str(), (int)footer.size());
+                    }
                 }
 
                 // Restore font

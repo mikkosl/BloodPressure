@@ -29,6 +29,9 @@ public:
     // New: fetch most recent readings (ordered by timestamp desc)
     bool GetRecentReadings(int limit, std::vector<Reading>& out) const;
 
+    // New: fetch most recent readings with paging (ordered by timestamp desc)
+    bool GetRecentReadingsPage(int limit, int offset, std::vector<Reading>& out) const;
+
 private:
     bool EnsureSchema();
     static std::string WStringToUtf8(const std::wstring& w);
