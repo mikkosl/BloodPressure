@@ -47,7 +47,8 @@ ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
-static void         CreateDatabaseDialog(HWND owner); // <-- add
+static void         CreateDatabaseDialog(HWND owner);
+static void         OpenDatabaseDialog(HWND owner); // <-- add
 
 static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void ShowAddReadingDialog(HWND owner);
@@ -224,10 +225,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             case IDM_ABOUT:
                 DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
                 break;
-            case IDM_CREATE: // <-- handle Create DB menu
+            case IDM_CREATE:
                 CreateDatabaseDialog(hWnd);
                 break;
-            case IDM_ADD: // Reading -> Add
+            case IDM_OPEN: // <-- add
+                OpenDatabaseDialog(hWnd);
+                break;
+            case IDM_ADD:
                 ShowAddReadingDialog(hWnd);
                 InvalidateRect(hWnd, nullptr, TRUE);
                 break;
@@ -1014,4 +1018,36 @@ static void CreateDatabaseDialog(HWND owner)
     g_pageIndex = 0;
     if (g_mainWnd) InvalidateRect(g_mainWnd, nullptr, TRUE);
     MessageBoxW(owner, L"Database created and ready.", szTitle, MB_OK | MB_ICONINFORMATION);
+}
+
+// Simple "Open DB" using an Open File dialog and (re)initializing the Database
+static void OpenDatabaseDialog(HWND owner)
+{
+    wchar_t file[MAX_PATH] = L"";
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"Database (*.db)\0*.db\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrTitle = L"Open Database";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    ofn.lpstrDefExt = L"db";
+
+    if (!GetOpenFileNameW(&ofn))
+        return; // user cancelled
+
+    // Open the selected DB; Initialize also checks schema
+    g_db.reset();
+    g_db = std::make_unique<Database>(file);
+    if (!g_db->Initialize())
+    {
+        MessageBoxW(owner, L"Failed to open or initialize the database.", szTitle, MB_OK | MB_ICONERROR);
+        g_db.reset();
+        return;
+    }
+
+    g_pageIndex = 0;
+    if (g_mainWnd) InvalidateRect(g_mainWnd, nullptr, TRUE);
+    MessageBoxW(owner, L"Database opened successfully.", szTitle, MB_OK | MB_ICONINFORMATION);
 }
