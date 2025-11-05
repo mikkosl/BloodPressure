@@ -753,8 +753,14 @@ static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         }
         return 0;
 
+        // Inside AddReadingWndProc(...), add:
+    case WM_KEYDOWN:
+        if (wParam == VK_RETURN) { SendMessageW(hWnd, WM_COMMAND, IDOK, 0); return 0; }
+        if (wParam == VK_ESCAPE) { SendMessageW(hWnd, WM_COMMAND, IDCANCEL, 0); return 0; }
+        break;
+
     case WM_COMMAND:
-        // Handle row selection change
+            // Handle row selection change
         if (HIWORD(wParam) == CBN_SELCHANGE && LOWORD(wParam) == IDC_EDIT_ROWCOMBO)
         {
             if (st && st->hRowCombo)
@@ -920,11 +926,19 @@ static void ShowAddReadingDialog(HWND owner)
     MSG msg;
     while (IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0))
     {
-        if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE &&
+        if (msg.message == WM_KEYDOWN &&
             (msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd)))
         {
-            DestroyWindow(hDlg);
-            continue;
+            if (msg.wParam == VK_RETURN) {
+                HWND hFocus = GetFocus();
+                if (!hFocus || !(GetWindowLongPtrW(hFocus, GWL_STYLE) & ES_MULTILINE)) {
+                    SendMessageW(hDlg, WM_COMMAND, IDOK, 0);
+                    continue;
+                }
+            } else if (msg.wParam == VK_ESCAPE) {
+                DestroyWindow(hDlg);
+                continue;
+            }
         }
 
         if (!IsDialogMessageW(hDlg, &msg))
@@ -979,11 +993,19 @@ static void ShowEditReadingDialog(HWND owner, const Reading& r)
     MSG msg;
     while (IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0))
     {
-        if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE &&
+        if (msg.message == WM_KEYDOWN &&
             (msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd)))
         {
-            DestroyWindow(hDlg);
-            continue;
+            if (msg.wParam == VK_RETURN) {
+                HWND hFocus = GetFocus();
+                if (!hFocus || !(GetWindowLongPtrW(hFocus, GWL_STYLE) & ES_MULTILINE)) {
+                    SendMessageW(hDlg, WM_COMMAND, IDOK, 0);
+                    continue;
+                }
+            } else if (msg.wParam == VK_ESCAPE) {
+                DestroyWindow(hDlg);
+                continue;
+            }
         }
         if (!IsDialogMessageW(hDlg, &msg))
         {
@@ -1275,7 +1297,7 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         AdjustWindowRectEx(&rc, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
         SetWindowPos(hWnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER);
 
-        RECT rcClient{};
+        RECT rcClient;
         GetClientRect(hWnd, &rcClient);
         const int btnW = 80, btnH = 26;
 
@@ -1319,6 +1341,12 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         }
     }
     return 0;
+
+    // Inside ReportAllWndProc(...), add:
+    case WM_KEYDOWN:
+        if (wParam == VK_RETURN) { SendMessageW(hWnd, WM_COMMAND, IDOK, 0); return 0; }
+        if (wParam == VK_ESCAPE) { DestroyWindow(hWnd); return 0; }
+        break;
 
     case WM_COMMAND:
         if (LOWORD(wParam) == IDOK)
@@ -1632,7 +1660,8 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
         SetWindowPos(hWnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER);
 
         // Place buttons bottom-right
-        RECT rcClient{}; GetClientRect(hWnd, &rcClient);
+        RECT rcClient;
+        GetClientRect(hWnd, &rcClient);
         const int btnW = 80, btnH = 26;
         if (st->hOk)     SetWindowPos(st->hOk, nullptr, rcClient.right - (btnW * 2 + margin * 2), rcClient.bottom - (btnH + margin), btnW, btnH, SWP_NOZORDER);
         if (st->hCancel) SetWindowPos(st->hCancel, nullptr, rcClient.right - (btnW + margin), rcClient.bottom - (btnH + margin), btnW, btnH, SWP_NOZORDER);
@@ -1703,6 +1732,12 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
         }
     }
     break;
+
+    // Inside ReportDatesWndProc(...), add:
+    case WM_KEYDOWN:
+        if (wParam == VK_RETURN) { SendMessageW(hWnd, WM_COMMAND, IDOK, 0); return 0; }
+        if (wParam == VK_ESCAPE) { SendMessageW(hWnd, WM_COMMAND, IDCANCEL, 0); return 0; }
+        break;
 
     case WM_COMMAND:
         switch (LOWORD(wParam))
