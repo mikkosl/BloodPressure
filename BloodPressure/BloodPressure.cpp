@@ -1797,7 +1797,10 @@ static LRESULT CALLBACK ReportDatesResultsWndProc(HWND hWnd, UINT msg, WPARAM wP
             margin, 0, 80, 26, hWnd, (HMENU)IDOK, hInst, nullptr);
         if (st->hClose) SendMessageW(st->hClose, WM_SETFONT, (WPARAM)st->hFont, TRUE);
 
-        // ListView: Date, Systolic, Diastolic, Pulse, Note
+        // In ReportDatesResultsWndProc, replace the ListView setup/population block
+        // (the part that builds "Date, Systolic, Diastolic, Pulse, Note") with this:
+
+                // ListView: Morning/Evening/Overall averages for the filtered date range
         st->hList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
             margin, margin, 100, 100, hWnd, (HMENU)43050, hInst, nullptr);
@@ -1807,89 +1810,87 @@ static LRESULT CALLBACK ReportDatesResultsWndProc(HWND hWnd, UINT msg, WPARAM wP
             ListView_SetExtendedListViewStyle(st->hList,
                 LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
 
+            // Compute averages from filtered readings (same logic as Report All)
+            int cntM = 0, cntE = 0, cntO = 0;
+            long sumSysM = 0, sumDiaM = 0, sumPulM = 0;
+            long sumSysE = 0, sumDiaE = 0, sumPulE = 0;
+            long sumSysO = 0, sumDiaO = 0, sumPulO = 0;
+
+            for (const auto& r : st->filtered) {
+                std::tm local{};
+                if (!TryParseUtcIsoToLocalTm(r.tsUtc, local)) continue;
+
+                sumSysO += r.systolic; sumDiaO += r.diastolic; sumPulO += r.pulse; ++cntO;
+
+                if (IsMorningHour(local.tm_hour)) {
+                    sumSysM += r.systolic; sumDiaM += r.diastolic; sumPulM += r.pulse; ++cntM;
+                }
+                else if (IsEveningHour(local.tm_hour)) {
+                    sumSysE += r.systolic; sumDiaE += r.diastolic; sumPulE += r.pulse; ++cntE;
+                }
+            }
+
+            const int avgSysM = RoundAvg((int)sumSysM, cntM);
+            const int avgDiaM = RoundAvg((int)sumDiaM, cntM);
+            const int avgPulM = RoundAvg((int)sumPulM, cntM);
+
+            const int avgSysE = RoundAvg((int)sumSysE, cntE);
+            const int avgDiaE = RoundAvg((int)sumDiaE, cntE);
+            const int avgPulE = RoundAvg((int)sumPulE, cntE);
+
+            const int avgSysO = RoundAvg((int)sumSysO, cntO);
+            const int avgDiaO = RoundAvg((int)sumDiaO, cntO);
+            const int avgPulO = RoundAvg((int)sumPulO, cntO);
+
+            // Columns: Bucket | N | Avg Sys/Avg Dia | Avg Pulse
             LVCOLUMNW col{};
             col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-
             struct ColDef { const wchar_t* text; int width; } cols[] = {
-                { L"Date (Local)", 140 },
-                { L"Systolic",       80 },
-                { L"Diastolic",      80 },
-                { L"Pulse",          80 },
-                { L"Note",          260 },
+                { L"Bucket",              160 },
+                { L"N",                    80 },
+                { L"Avg Sys/Avg Dia",     120 },
+                { L"Avg Pulse",           100 },
             };
             for (int i = 0; i < (int)(sizeof(cols) / sizeof(cols[0])); ++i) {
                 col.pszText = const_cast<wchar_t*>(cols[i].text);
                 col.cx = cols[i].width;
                 col.iSubItem = i;
-				ListView_InsertColumn(st->hList, i, &col);
+                ListView_InsertColumn(st->hList, i, &col);
             }
 
-            // Populate
-            for (int i = 0; i < (int)st->filtered.size(); ++i)
-            {
-                const auto& r = st->filtered[i];
-                std::wstring tsLocal = UtcIsoToLocalDisplay(r.tsUtc);
+            if (cntO > 0) {
+                auto addRow = [&](int row, const wchar_t* bucket, int n, int s, int d, int p) {
+                    LVITEMW it{};
+                    it.mask = LVIF_TEXT;
+                    it.iItem = row;
+                    it.iSubItem = 0;
+                    it.pszText = const_cast<wchar_t*>(bucket);
+                    ListView_InsertItemW(st->hList, &it);
 
+                    wchar_t buf[32];
+                    swprintf_s(buf, L"%d", n);
+                    ListView_SetItemTextW(st->hList, row, 1, buf);
+                    swprintf_s(buf, L"%d/%d", s, d);
+                    ListView_SetItemTextW(st->hList, row, 2, buf);
+                    swprintf_s(buf, L"%d", p);
+                    ListView_SetItemTextW(st->hList, row, 3, buf);
+                    };
+
+                int r = 0;
+                addRow(r++, L"Morning (00:00–11:59)", cntM, avgSysM, avgDiaM, avgPulM);
+                addRow(r++, L"Evening (12:00–23:59)", cntE, avgSysE, avgDiaE, avgPulE);
+                addRow(r++, L"Overall", cntO, avgSysO, avgDiaO, avgPulO);
+            }
+            else {
                 LVITEMW it{};
                 it.mask = LVIF_TEXT;
-                it.iItem = i;
+                it.iItem = 0;
                 it.iSubItem = 0;
-                it.pszText = const_cast<wchar_t*>(tsLocal.c_str());
+                it.pszText = const_cast<wchar_t*>(L"No data");
                 ListView_InsertItemW(st->hList, &it);
-
-                wchar_t buf[64];
-                swprintf_s(buf, L"%d", r.systolic);
-                ListView_SetItemTextW(st->hList, i, 1, buf);
-                swprintf_s(buf, L"%d", r.diastolic);
-                ListView_SetItemTextW(st->hList, i, 2, buf);
-                swprintf_s(buf, L"%d", r.pulse);
-                ListView_SetItemTextW(st->hList, i, 3, buf);
-                ListView_SetItemTextW(st->hList, i, 4, const_cast<wchar_t*>(r.note.c_str()));
             }
 
-            for (int i = 0; i < 5; ++i) {
-                ListView_SetColumnWidth(st->hList, i, LVSCW_AUTOSIZE_USEHEADER);
-            }
-        }
-
-        RECT rc{ 0,0, 760, 420 };
-        AdjustWindowRectEx(&rc, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
-        SetWindowPos(hWnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER);
-
-        RECT rcClient{}; GetClientRect(hWnd, &rcClient);
-        const int btnW = 80, btnH = 26;
-        if (st->hClose) {
-            SetWindowPos(st->hClose, nullptr, rcClient.right - (btnW + margin), rcClient.bottom - (btnH + margin),
-                btnW, btnH, SWP_NOZORDER);
-        }
-        if (st->hList) {
-            int listRight = rcClient.right - margin;
-            int listBottom = (st->hClose ? (rcClient.bottom - (btnH + 2 * margin)) : (rcClient.bottom - margin));
-            SetWindowPos(st->hList, nullptr, margin, margin,
-                listRight - margin, listBottom - margin, SWP_NOZORDER);
-        }
-
-        CenterToOwner(hWnd, GetWindow(hWnd, GW_OWNER));
-        EnsureWindowOnScreen(hWnd);
-    }
-    return 0;
-
-    case WM_SIZE:
-    {
-        if (!st) break;
-        RECT rc{}; GetClientRect(hWnd, &rc);
-        const int margin = 10;
-        const int btnW = 80, btnH = 26;
-        if (st->hClose) {
-            SetWindowPos(st->hClose, nullptr, rc.right - (btnW + margin), rc.bottom - (btnH + margin),
-                btnW, btnH, SWP_NOZORDER);
-        }
-        if (st->hList) {
-            int listRight = rc.right - margin;
-            int listBottom = (st->hClose ? (rc.bottom - (btnH + 2 * margin)) : (rc.bottom - margin));
-            SetWindowPos(st->hList, nullptr, margin, margin,
-                listRight - margin, listBottom - margin, SWP_NOZORDER);
-            for (int i = 0; i < 5; ++i) {
+            for (int i = 0; i < 4; ++i) {
                 ListView_SetColumnWidth(st->hList, i, LVSCW_AUTOSIZE_USEHEADER);
             }
         }
