@@ -199,49 +199,6 @@ bool Database::GetReadingCount(int& outCount) const
     return false;
 }
 
-bool Database::GetRecentReadings(int limit, std::vector<Reading>& out) const
-{
-    out.clear();
-    if (!db_ || limit <= 0) return false;
-
-    const char* sql =
-        "SELECT id, ts_utc, systolic, diastolic, pulse, COALESCE(note,'') "
-        "FROM readings "
-        "ORDER BY ts_utc DESC "
-        "LIMIT ?;";
-    sqlite3_stmt* stmt = nullptr;
-    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    if (rc != SQLITE_OK)
-    {
-        LogSqliteError(db_, "prepare(get recent)", rc);
-        return false;
-    }
-
-    sqlite3_bind_int(stmt, 1, limit);
-
-    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
-    {
-        Reading r{};
-        r.id       = sqlite3_column_int(stmt, 0);
-        r.tsUtc    = Utf8ToWString(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)));
-        r.systolic = sqlite3_column_int(stmt, 2);
-        r.diastolic= sqlite3_column_int(stmt, 3);
-        r.pulse    = sqlite3_column_int(stmt, 4);
-        r.note     = Utf8ToWString(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5)));
-        out.push_back(std::move(r));
-    }
-
-    if (rc != SQLITE_DONE)
-    {
-        LogSqliteError(db_, "step(get recent)", rc);
-        sqlite3_finalize(stmt);
-        return false;
-    }
-
-    sqlite3_finalize(stmt);
-    return true;
-}
-
 bool Database::GetRecentReadingsPage(int limit, int offset, std::vector<Reading>& out) const
 {
     out.clear();

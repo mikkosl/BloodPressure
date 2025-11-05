@@ -14,11 +14,9 @@
 #include <string>
 #include <vector>
 #include <ctime>
-#include <shlobj.h>
-#include <KnownFolders.h>
 #include <windowsx.h>
 #include <windows.h>
-#pragma comment(lib, "shell32.lib")
+#include <objbase.h> 
 #pragma comment(lib, "Ole32.lib")
 
 #ifndef DateTime_SetFormatW
@@ -65,7 +63,6 @@ WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
 
 static std::unique_ptr<Database> g_db;
 static HWND g_mainWnd = nullptr;                // new: remember main window
-static int g_rowPromptResult = -1;
 
 static int g_pageIndex = 0;
 static constexpr int kPageSize = 20;
@@ -84,15 +81,7 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND, UINT, WPARAM, LPARAM);
 static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void ShowAddReadingDialog(HWND owner);
 static void ShowEditReadingDialog(HWND owner, const Reading& r);
-static bool PromptRowNumber(HWND owner, int& outRow);
 static void ShowReportDatesResultsWindow(HWND owner, const SYSTEMTIME& stStart, const SYSTEMTIME& stEnd);
-static LRESULT CALLBACK ReportDatesResultsWndProc(HWND, UINT, WPARAM, LPARAM);
-
-// Helpers
-#ifndef WIDEN
-#define WIDEN2(x) L##x
-#define WIDEN(x) WIDEN2(x)
-#endif
 
 // Add near other helpers
 inline void EnsureWindowOnScreen(HWND hWnd)
@@ -155,17 +144,6 @@ static int IdealCtlHeightFromFont(HWND hwndRef, HFONT hFont, int minH = 28, int 
         ReleaseDC(hwndRef, hdc);
     }
     return h;
-}
-
-static std::wstring GetDatabasePath()
-{
-    // Use the directory of this source file (i.e., the project folder)
-    const wchar_t* srcPath = WIDEN(__FILE__);
-    std::wstring dir(srcPath);
-    size_t pos = dir.find_last_of(L"\\/");
-    if (pos != std::wstring::npos)
-        dir.erase(pos + 1);
-    return dir + L"BloodPressure.db";
 }
 
 // Helpers to compute local time from UTC ISO and averages
@@ -475,7 +453,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 //Header
                 HFONT hMono = (HFONT)GetStockObject(SYSTEM_FIXED_FONT);
                 HGDIOBJ oldFont = SelectObject(hdc, hMono);
-                wchar_t dateHeader[] = L"Date (Local)";
                 const wchar_t* header = L"No  Date (Local)      Sys/Dia Pul  Note";
                 TextOutW(hdc, 10, y, header, lstrlenW(header));
                 y += 17;
@@ -899,7 +876,6 @@ static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
         if (st)
         {
             if (st->owner) EnableWindow(st->owner, TRUE);
-            // g_rowPromptResult = st->result; // remove: not related to this dialog
             SetWindowLongPtrW(hWnd, GWLP_USERDATA, 0);
             delete st;
         }
@@ -1022,149 +998,6 @@ static void ShowEditReadingDialog(HWND owner, const Reading& r)
         ShowWindow(owner, SW_RESTORE);
         SetForegroundWindow(owner);
     }
-}
-
-// Simple prompt window to get a row number from the user
-static LRESULT CALLBACK RowPromptWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    struct RowPromptState { HWND owner{}, hEdit{}; int result{ -1 }; };
-    RowPromptState* st = reinterpret_cast<RowPromptState*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
-    switch (msg)
-    {
-    case WM_CREATE:
-    {
-        auto cs = reinterpret_cast<LPCREATESTRUCT>(lParam);
-        auto owner = reinterpret_cast<HWND>(cs->lpCreateParams);
-        auto* s = new RowPromptState();
-        s->owner = owner;
-        SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)s);
-
-        HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-
-        CreateWindowExW(0, L"STATIC", L"Row No:",
-            WS_CHILD | WS_VISIBLE, 12, 12, 60, 20, hWnd, nullptr, hInst, nullptr);
-        s->hEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-            WS_CHILD | WS_VISIBLE | ES_NUMBER | WS_TABSTOP,
-            80, 10, 140, 24, hWnd, (HMENU)1001, hInst, nullptr);
-        CreateWindowExW(0, L"BUTTON", L"OK",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-            80, 44, 60, 24, hWnd, (HMENU)IDOK, hInst, nullptr);
-        CreateWindowExW(0, L"BUTTON", L"Cancel",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-            160, 44, 60, 24, hWnd, (HMENU)IDCANCEL, hInst, nullptr);
-
-        SendMessageW(s->hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
-        SetFocus(s->hEdit);
-
-        RECT rc{ 0,0, 260, 100 };
-        AdjustWindowRectEx(&rc, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
-        SetWindowPos(hWnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER);
-        CenterToOwner(hWnd, owner);
-    }
-    return 0;
-
-    case WM_COMMAND:
-        if (LOWORD(wParam) == IDOK)
-        {
-            if (!st) break;
-            wchar_t buf[32]{};
-            GetWindowTextW(st->hEdit, buf, 32);
-            int val = (int)wcstol(buf, nullptr, 10);
-            if (val <= 0) {
-                MessageBoxW(hWnd, L"Enter a positive number.", L"Validation", MB_OK | MB_ICONWARNING);
-                return 0;
-            }
-            st->result = val;
-            DestroyWindow(hWnd);
-            return 0;
-        }
-        else if (LOWORD(wParam) == IDCANCEL)
-        {
-            if (st) st->result = -1;
-            DestroyWindow(hWnd);
-            return 0;
-        }
-        break;
-
-    case WM_CLOSE:
-        if (st) st->result = -1;
-        DestroyWindow(hWnd);
-        return 0;
-
-    case WM_NCDESTROY:
-        if (st)
-        {
-            if (st->owner) {
-                EnableWindow(st->owner, TRUE);
-                ShowWindow(st->owner, SW_RESTORE);
-                SetForegroundWindow(st->owner);
-            }
-            // propagate the result to PromptRowNumber
-            g_rowPromptResult = st->result;
-            SetWindowLongPtrW(hWnd, GWLP_USERDATA, 0);
-            delete st;
-        }
-        return 0;
-    }
-    return DefWindowProcW(hWnd, msg, wParam, lParam);
-}
-
-static bool PromptRowNumber(HWND owner, int& outRow)
-{
-    // Register class once
-    static ATOM s_atom = 0;
-    if (!s_atom)
-    {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.style = CS_DBLCLKS;
-        wc.lpfnWndProc = RowPromptWndProc;
-        wc.hInstance = hInst;
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
-        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-        wc.lpszClassName = L"BP_RowPrompt";
-        s_atom = RegisterClassExW(&wc);
-    }
-
-    HWND hDlg = CreateWindowExW(WS_EX_DLGMODALFRAME,
-        L"BP_RowPrompt", L"Edit Row",
-        WS_CAPTION | WS_SYSMENU,
-        CW_USEDEFAULT, CW_USEDEFAULT, 260, 100,
-        owner, nullptr, hInst, owner);
-    if (!hDlg) return false;
-
-    EnableWindow(owner, FALSE);
-    ShowWindow(hDlg, SW_SHOW);
-    UpdateWindow(hDlg);
-
-    // Modal-like loop
-    MSG msg;
-    while (IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0))
-    {
-        if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE &&
-            (msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd)))
-        {
-            DestroyWindow(hDlg);
-            continue;
-        }
-
-        if (!IsDialogMessageW(hDlg, &msg))
-        {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-
-    // Use captured result
-    if (g_rowPromptResult > 0)
-    {
-        outRow = g_rowPromptResult;
-        g_rowPromptResult = -1;
-        return true;
-    }
-    g_rowPromptResult = -1;
-    return false;
 }
 
 // Simple "Create DB" using a Save File dialog and (re)initializing the Database
@@ -1430,8 +1263,7 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
             }
         }
 
-        // In ReportDatesResultsWndProc -> case WM_CREATE, after the ListView is created and populated, add:
-                // Auto-size columns, then lay out controls and window like the Report All window
+        // Auto-size columns, then lay out controls and window like the Report All window
         if (st->hList) {
             for (int i = 0; i < 4; ++i) {
                 ListView_SetColumnWidth(st->hList, i, LVSCW_AUTOSIZE_USEHEADER);
@@ -1481,7 +1313,7 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
                 listRight - margin, listBottom - margin, SWP_NOZORDER);
 
             // Optional: auto-size columns to header/content
-            for (int i = 0; i < 5; ++i) {
+            for (int i = 0; i < 4; ++i) {
                 ListView_SetColumnWidth(st->hList, i, (i == 0) ? LVSCW_AUTOSIZE_USEHEADER : LVSCW_AUTOSIZE_USEHEADER);
             }
         }
@@ -1701,252 +1533,6 @@ static void ShowReportAllWindow(HWND owner)
     UpdateWindow(hWnd);
 }
 
-struct ReportDatesResultsInit
-{
-    SYSTEMTIME stStart{};
-    SYSTEMTIME stEnd{};
-};
-
-struct ReportDatesResultsState
-{
-    HWND hwnd{};
-    HFONT hFont{};
-    bool ownsFont{};
-    HWND hList{};
-    HWND hClose{};
-    std::vector<Reading> filtered;
-};
-
-static LRESULT CALLBACK ReportDatesResultsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    ReportDatesResultsState* st = reinterpret_cast<ReportDatesResultsState*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
-    switch (msg)
-    {
-    case WM_CREATE:
-    {
-        auto cs = reinterpret_cast<LPCREATESTRUCT>(lParam);
-        auto init = reinterpret_cast<const ReportDatesResultsInit*>(cs->lpCreateParams);
-
-        st = new ReportDatesResultsState();
-        st->hwnd = hWnd;
-        SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)st);
-
-        st->hFont = CreateUiFontForWindow(hWnd, 14, FW_SEMIBOLD, L"Segoe UI");
-        st->ownsFont = (st->hFont != nullptr);
-        if (!st->hFont) st->hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-
-        // Filter readings
-        st->filtered.clear();
-        if (g_db)
-        {
-            std::vector<Reading> all;
-            if (g_db->GetAllReadings(all) && init)
-            {
-                const int startKey = DateKeyFromSystemTime(init->stStart);
-                const int endKeyRaw = DateKeyFromSystemTime(init->stEnd);
-                const int endKey = (startKey <= endKeyRaw) ? endKeyRaw : startKey;
-                const int startK = (startKey <= endKeyRaw) ? startKey : endKeyRaw;
-                for (const auto& r : all)
-                {
-                    std::tm local{};
-                    if (!TryParseUtcIsoToLocalTm(r.tsUtc, local)) continue;
-                    const int key = DateKeyFromTm(local);
-                    if (key >= startK && key <= endKey)
-                        st->filtered.push_back(r);
-                }
-            }
-        }
-
-        const int margin = 10;
-
-        // OK button
-        st->hClose = CreateWindowExW(0, L"BUTTON", L"OK",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-            margin, 0, 80, 26, hWnd, (HMENU)IDOK, hInst, nullptr);
-        if (st->hClose) SendMessageW(st->hClose, WM_SETFONT, (WPARAM)st->hFont, TRUE);
-
-        // ListView: Morning/Evening/Overall averages for the filtered date range
-        st->hList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-            margin, margin, 100, 100, hWnd, (HMENU)43050, hInst, nullptr);
-        if (st->hList)
-        {
-            SendMessageW(st->hList, WM_SETFONT, (WPARAM)st->hFont, TRUE);
-            ListView_SetExtendedListViewStyle(st->hList,
-                LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
-
-            // Compute averages from filtered readings (same logic as Report All)
-            int cntM = 0, cntE = 0, cntO = 0;
-            long sumSysM = 0, sumDiaM = 0, sumPulM = 0;
-            long sumSysE = 0, sumDiaE = 0, sumPulE = 0;
-            long sumSysO = 0, sumDiaO = 0, sumPulO = 0;
-
-            for (const auto& r : st->filtered) {
-                std::tm local{};
-                if (!TryParseUtcIsoToLocalTm(r.tsUtc, local)) continue;
-
-                sumSysO += r.systolic; sumDiaO += r.diastolic; sumPulO += r.pulse; ++cntO;
-
-                if (IsMorningHour(local.tm_hour)) {
-                    sumSysM += r.systolic; sumDiaM += r.diastolic; sumPulM += r.pulse; ++cntM;
-                }
-                else if (IsEveningHour(local.tm_hour)) {
-                    sumSysE += r.systolic; sumDiaE += r.diastolic; sumPulE += r.pulse; ++cntE;
-                }
-            }
-
-            const int avgSysM = RoundAvg((int)sumSysM, cntM);
-            const int avgDiaM = RoundAvg((int)sumDiaM, cntM);
-            const int avgPulM = RoundAvg((int)sumPulM, cntM);
-
-            const int avgSysE = RoundAvg((int)sumSysE, cntE);
-            const int avgDiaE = RoundAvg((int)sumDiaE, cntE);
-            const int avgPulE = RoundAvg((int)sumPulE, cntE);
-
-            const int avgSysO = RoundAvg((int)sumSysO, cntO);
-            const int avgDiaO = RoundAvg((int)sumDiaO, cntO);
-            const int avgPulO = RoundAvg((int)sumPulO, cntO);
-
-            // Columns: Bucket | N | Avg Sys/Avg Dia | Avg Pulse
-            LVCOLUMNW col{};
-            col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-            struct ColDef { const wchar_t* text; int width; } cols[] = {
-                { L"Bucket",              160 },
-                { L"N",                    80 },
-                { L"Avg Sys/Avg Dia",     120 },
-                { L"Avg Pulse",           100 },
-            };
-            for (int i = 0; i < (int)(sizeof(cols) / sizeof(cols[0])); ++i) {
-                col.pszText = const_cast<wchar_t*>(cols[i].text);
-                col.cx = cols[i].width;
-                col.iSubItem = i;
-                ListView_InsertColumn(st->hList, i, &col);
-            }
-
-            if (cntO > 0) {
-                auto addRow = [&](int row, const wchar_t* bucket, int n, int s, int d, int p) {
-                    LVITEMW it{};
-                    it.mask = LVIF_TEXT;
-                    it.iItem = row;
-                    it.iSubItem = 0;
-                    it.pszText = const_cast<wchar_t*>(bucket);
-                    ListView_InsertItemW(st->hList, &it);
-
-                    wchar_t buf[32];
-                    swprintf_s(buf, L"%d", n);
-                    ListView_SetItemTextW(st->hList, row, 1, buf);
-                    swprintf_s(buf, L"%d/%d", s, d);
-                    ListView_SetItemTextW(st->hList, row, 2, buf);
-                    swprintf_s(buf, L"%d", p);
-                    ListView_SetItemTextW(st->hList, row, 3, buf);
-                    };
-
-                int r = 0;
-                addRow(r++, L"Morning (00:00–11:59)", cntM, avgSysM, avgDiaM, avgPulM);
-                addRow(r++, L"Evening (12:00–23:59)", cntE, avgSysE, avgDiaE, avgPulE);
-                addRow(r++, L"Overall", cntO, avgSysO, avgDiaO, avgPulO);
-            }
-            else {
-                LVITEMW it{};
-                it.mask = LVIF_TEXT;
-                it.iItem = 0;
-                it.iSubItem = 0;
-                it.pszText = const_cast<wchar_t*>(L"No data");
-                ListView_InsertItemW(st->hList, &it);
-            }
-
-            for (int i = 0; i < 4; ++i) {
-                ListView_SetColumnWidth(st->hList, i, LVSCW_AUTOSIZE_USEHEADER);
-            }
-        }
-
-        // Layout: size window (keeps requested size) and place controls
-        RECT rc{ 0,0, 760, 420 };
-        AdjustWindowRectEx(&rc, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
-        SetWindowPos(hWnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER | SWP_NOMOVE);
-
-        RECT rcClient{}; GetClientRect(hWnd, &rcClient);
-        const int btnW = 80, btnH = 26;
-
-        if (st->hClose) {
-            SetWindowPos(st->hClose, nullptr,
-                rcClient.right - (btnW + margin),
-                rcClient.bottom - (btnH + margin),
-                btnW, btnH, SWP_NOZORDER);
-        }
-        if (st->hList) {
-            const int listRight = rcClient.right - margin;
-            const int listBottom = (st->hClose ? (rcClient.bottom - (btnH + 2 * margin)) : (rcClient.bottom - margin));
-            SetWindowPos(st->hList, nullptr,
-                margin, margin,
-                listRight - margin,
-                listBottom - margin,
-                SWP_NOZORDER);
-        }
-
-        CenterToOwner(hWnd, GetWindow(hWnd, GW_OWNER));
-        EnsureWindowOnScreen(hWnd);
-    }
-    return 0;
-
-    case WM_SIZE:
-    {
-        if (!st) break;
-        RECT rc{}; GetClientRect(hWnd, &rc);
-        const int margin = 10;
-        const int btnW = 80, btnH = 26;
-
-        if (st->hClose) {
-            SetWindowPos(st->hClose, nullptr,
-                rc.right - (btnW + margin),
-                rc.bottom - (btnH + margin),
-                btnW, btnH, SWP_NOZORDER);
-        }
-        if (st->hList) {
-            const int listRight = rc.right - margin;
-            const int listBottom = (st->hClose ? (rc.bottom - (btnH + 2 * margin)) : (rc.bottom - margin));
-            SetWindowPos(st->hList, nullptr,
-                margin, margin,
-                listRight - margin,
-                listBottom - margin,
-                SWP_NOZORDER);
-
-            // Keep columns sensible after resize
-            for (int i = 0; i < 4; ++i) {
-                ListView_SetColumnWidth(st->hList, i, LVSCW_AUTOSIZE_USEHEADER);
-            }
-        }
-    }
-    return 0;
-
-    case WM_COMMAND:
-        if (LOWORD(wParam) == IDOK) {
-            DestroyWindow(hWnd);
-            return 0;
-        }
-        break;
-
-    case WM_DESTROY:
-    {
-        HWND owner = GetWindow(hWnd, GW_OWNER);
-        if (owner && IsWindow(owner)) {
-            EnableWindow(owner, TRUE);
-            ShowWindow(owner, SW_RESTORE);
-            SetForegroundWindow(owner);
-        }
-        return 0;
-    }
-    case WM_NCDESTROY:
-        if (st) {
-            if (st->ownsFont && st->hFont) { DeleteObject(st->hFont); st->hFont = nullptr; }
-            SetWindowLongPtrW(hWnd, GWLP_USERDATA, 0);
-            delete st;
-        }
-        return 0;
-    }
-    return DefWindowProcW(hWnd, msg, wParam, lParam);
-}
-
 // Replace the whole ReportDatesWndProc with this fixed version (removes duplicate case IDOK and handles OK in WM_COMMAND)
 static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -2155,47 +1741,6 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
-
-static void ShowReportDatesResultsWindow(HWND owner, const SYSTEMTIME& stStart, const SYSTEMTIME& stEnd)
-{
-    static ATOM s_atom = 0;
-    if (!s_atom)
-    {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.style = CS_DBLCLKS;
-        wc.lpfnWndProc = ReportDatesResultsWndProc;
-        wc.hInstance = hInst;
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
-        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-        wc.lpszClassName = L"BP_ReportDatesResultsWindow";
-        s_atom = RegisterClassExW(&wc);
-    }
-
-    ReportDatesResultsInit init{ stStart, stEnd };
-
-    const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
-    HWND hWnd = CreateWindowExW(WS_EX_DLGMODALFRAME,
-        L"BP_ReportDatesResultsWindow", L"Report - Averages by Dates",
-        style, CW_USEDEFAULT, CW_USEDEFAULT, 760, 420,
-        owner, nullptr, hInst, &init);
-
-    if (!hWnd) {
-        DWORD err = GetLastError();
-        wchar_t msg[128];
-        swprintf_s(msg, L"Report Dates Results window failed (err=%lu).", err);
-        MessageBoxW(owner, msg, szTitle, MB_OK | MB_ICONERROR);
-        return;
-    }
-
-    EnableWindow(owner, FALSE);
-    ShowWindow(hWnd, SW_SHOW);
-    UpdateWindow(hWnd);
-}
-
-
-
         
 // Add this function definition near the other Show*Window functions
 
