@@ -221,6 +221,27 @@ static bool CopyListViewAsTsvToClipboard(HWND owner, HWND hList)
     return true;
 }
 
+// Add near other helpers (below Save/Copy helpers)
+static void ListView_AutoSizeToHeaderAndContent(HWND hList)
+{
+    if (!IsWindow(hList)) return;
+    // Get column count from header
+    HWND hHdr = (HWND)SendMessageW(hList, LVM_GETHEADER, 0, 0);
+    int colCount = hHdr ? (int)SendMessageW(hHdr, HDM_GETITEMCOUNT, 0, 0) : 0;
+    if (colCount <= 0) return;
+
+    for (int i = 0; i < colCount; ++i) {
+        // Size to content
+        ListView_SetColumnWidth(hList, i, LVSCW_AUTOSIZE);
+        int wContent = ListView_GetColumnWidth(hList, i);
+        // Size to header
+        ListView_SetColumnWidth(hList, i, LVSCW_AUTOSIZE_USEHEADER);
+        int wHeader = ListView_GetColumnWidth(hList, i);
+        // Take the larger one
+        ListView_SetColumnWidth(hList, i, (wContent > wHeader) ? wContent : wHeader);
+    }
+}
+
 static void ShowGettingStarted(HWND owner)
 {
     const wchar_t* msg =
@@ -1422,18 +1443,19 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
 
             // Columns: Bucket | N | Avg Sys | Avg Dia | Avg Pulse
             LVCOLUMNW col{};
-            col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+            col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
 
-            struct ColDef { const wchar_t* text; int width; } cols[] = {
-                { L"Bucket",   160 },
-                { L"N",         80 },
-                { L"Avg Sys/Avg Dia",  100 },
-                { L"Avg Pulse", 100 },
+            struct ColDef { const wchar_t* text; int width; int fmt; } cols[] = {
+                { L"Bucket",              160, LVCFMT_LEFT   },
+                { L"N",                    80, LVCFMT_RIGHT  },
+                { L"Avg Sys/Avg Dia",     120, LVCFMT_CENTER},
+                { L"Avg Pulse",           100, LVCFMT_RIGHT  },
             };
             for (int i = 0; i < (int)(sizeof(cols) / sizeof(cols[0])); ++i) {
                 col.pszText = const_cast<wchar_t*>(cols[i].text);
                 col.cx = cols[i].width;
                 col.iSubItem = i;
+                col.fmt = cols[i].fmt;
                 ListView_InsertColumn(st->hList, i, &col);
             }
 
@@ -1459,6 +1481,7 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
                 addRow(r++, L"Morning (00:00–11:59)", cntM, avgSysM, avgDiaM, avgPulM);
                 addRow(r++, L"Evening (12:00–23:59)", cntE, avgSysE, avgDiaE, avgPulE);
                 addRow(r++, L"Overall", cntO, avgSysO, avgDiaO, avgPulO);
+                ListView_AutoSizeToHeaderAndContent(st->hList);
             }
             else if (st->hList) {
                 LVITEMW it{};
@@ -1467,6 +1490,7 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
                 it.iSubItem = 0;
                 it.pszText = const_cast<wchar_t*>(L"No data");
                 ListView_InsertItemW(st->hList, &it);
+                ListView_AutoSizeToHeaderAndContent(st->hList);
             }
         }
 
@@ -1540,27 +1564,12 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         }
         if (st->hList) {
             int top = margin * 2;
-            if (st->dtpH) {
-                // If st->dtpH is a HWND, get its height using GetWindowRect
-                RECT rc{};
-                if (GetWindowRect(st->dtpH, &rc)) {
-                    top += rc.bottom - rc.top;
-                }
-                else {
-                    top += 24; // fallback height if GetWindowRect fails
-                }
-            }
-            else {
-                top += 24; // fallback height if st->dtpH is null
-            }
+            top += 24; // simple top offset; no DTPs in this window
             int listRight = rc.right - margin;
             int listBottom = (st->hClose ? (rc.bottom - (btnH + 2 * margin)) : (rc.bottom - margin));
             SetWindowPos(st->hList, nullptr, margin, top, listRight - margin, max(0, listBottom - top), SWP_NOZORDER);
 
-            // Optional: auto-size columns to header/content
-            for (int i = 0; i < 4; ++i) {
-                ListView_SetColumnWidth(st->hList, i, (i == 0) ? LVSCW_AUTOSIZE_USEHEADER : LVSCW_AUTOSIZE_USEHEADER);
-            }
+            ListView_AutoSizeToHeaderAndContent(st->hList);
         }
     }
     return 0;
@@ -1875,17 +1884,19 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             ListView_SetExtendedListViewStyle(st->hList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
 
             // Columns (insert once)
-            LVCOLUMNW col{}; col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-            struct ColDef { const wchar_t* text; int width; } cols[] = {
-                { L"Bucket",              160 },
-                { L"N",                    80 },
-                { L"Avg Sys/Avg Dia",     120 },
-                { L"Avg Pulse",           100 },
+            LVCOLUMNW col{};
+            col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
+            struct ColDef { const wchar_t* text; int width; int fmt; } cols[] = {
+                { L"Bucket",              160, LVCFMT_LEFT   },
+                { L"N",                    80, LVCFMT_RIGHT  },
+                { L"Avg Sys/Avg Dia",     120, LVCFMT_CENTER},
+                { L"Avg Pulse",           100, LVCFMT_RIGHT  },
             };
             for (int i = 0; i < (int)(sizeof(cols) / sizeof(cols[0])); ++i) {
                 col.pszText = const_cast<wchar_t*>(cols[i].text);
                 col.cx = cols[i].width;
                 col.iSubItem = i;
+                col.fmt = cols[i].fmt;
                 ListView_InsertColumn(st->hList, i, &col);
             }
             st->listInit = true;
@@ -1910,10 +1921,7 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
                 btnW, btnH, SWP_NOZORDER);
         }
         if (st->hList) {
-            int listRight = rcClient.right - margin;
-            int listBottom = (st->hClose ? (rcClient.bottom - (btnH + 2 * margin)) : (rcClient.bottom - margin));
-            SetWindowPos(st->hList, nullptr, margin, margin,
-                listRight - margin, listBottom - margin, SWP_NOZORDER);
+            ListView_AutoSizeToHeaderAndContent(st->hList);
         }
 
         CenterToOwner(hWnd, GetWindow(hWnd, GW_OWNER));
@@ -1993,6 +2001,7 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             }
 
             FillDatesAveragesList(st->hList, st->stStart, st->stEnd);
+            ListView_AutoSizeToHeaderAndContent(st->hList);
             InvalidateRect(st->hList, nullptr, FALSE);
             return 0;
         }
@@ -2020,6 +2029,7 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
                 DateTime_GetSystemtime(st->hStart, &st->stStart);
                 DateTime_GetSystemtime(st->hEnd, &st->stEnd);
                 FillDatesAveragesList(st->hList, st->stStart, st->stEnd);
+                ListView_AutoSizeToHeaderAndContent(st->hList);
             }
             return 0;
 
