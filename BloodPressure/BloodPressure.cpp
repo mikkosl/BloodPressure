@@ -84,8 +84,6 @@ static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 static void ShowAddReadingDialog(HWND owner);
 static void ShowEditReadingDialog(HWND owner, const Reading& r);
 
-// Add these helpers near other helper functions (e.g., below IdealCtlHeightFromFont)
-
 static bool WriteUtf8File(const wchar_t* path, const std::wstring& text)
 {
     int needed = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), nullptr, 0, nullptr, nullptr);
@@ -108,6 +106,100 @@ static bool WriteUtf8File(const wchar_t* path, const std::wstring& text)
     BOOL ok = WriteFile(h, bytes.data(), (DWORD)bytes.size(), &written, nullptr);
     CloseHandle(h);
     return ok && written == bytes.size();
+}
+
+// Locale-aware CSV list separator (Excel honors this)
+static wchar_t GetCsvSeparator()
+{
+    wchar_t sep = L',';
+    wchar_t ls[8] = L"";
+    int n = GetLocaleInfoW(LOCALE_USER_DEFAULT, LOCALE_SLIST, ls, (int)_countof(ls));
+    if (n > 1 && ls[0]) sep = ls[0];
+    return sep;
+}
+
+// Escape per RFC 4180: wrap if contains sep, quotes, or CR/LF; double the quotes.
+static std::wstring CsvEscape(const std::wstring& v, wchar_t sep)
+{
+    if (v.find(sep) != std::wstring::npos ||
+        v.find(L'"') != std::wstring::npos ||
+        v.find(L'\r') != std::wstring::npos ||
+        v.find(L'\n') != std::wstring::npos)
+    {
+        std::wstring out;
+        out.reserve(v.size() + 2);
+        out.push_back(L'"');
+        for (wchar_t ch : v) {
+            if (ch == L'"') out.push_back(L'"');
+            out.push_back(ch);
+        }
+        out.push_back(L'"');
+        return out;
+    }
+    return v;
+}
+
+// Save CSV exactly as shown in the ListView (do NOT split "Avg Sys/Avg Dia")
+static bool SaveListViewAsCsv(HWND owner, HWND hList, const wchar_t* suggestedName, const wchar_t* dlgTitle)
+{
+    if (!IsWindow(hList)) {
+        MessageBoxW(owner, L"Report view is not available.", szTitle, MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    wchar_t sep = GetCsvSeparator();
+    std::wstring output;
+
+    HWND hHeader = (HWND)SendMessageW(hList, LVM_GETHEADER, 0, 0);
+    int colCount = hHeader ? (int)SendMessageW(hHeader, HDM_GETITEMCOUNT, 0, 0) : 0;
+    if (colCount <= 0) colCount = 1;
+
+    // Header
+    for (int c = 0; c < colCount; ++c) {
+        HDITEMW hd{}; hd.mask = HDI_TEXT;
+        wchar_t hbuf[128] = L"";
+        hd.pszText = hbuf; hd.cchTextMax = (int)_countof(hbuf);
+        if (hHeader) SendMessageW(hHeader, HDM_GETITEMW, (WPARAM)c, (LPARAM)&hd);
+        output.append(CsvEscape(hbuf, sep));
+        output.push_back(c + 1 < colCount ? sep : L'\n');
+    }
+
+    // Rows
+    int rowCount = (int)SendMessageW(hList, LVM_GETITEMCOUNT, 0, 0);
+    for (int r = 0; r < rowCount; ++r) {
+        for (int c = 0; c < colCount; ++c) {
+            wchar_t buf[512] = L"";
+            LVITEMW it{}; it.iSubItem = c; it.pszText = buf; it.cchTextMax = (int)_countof(buf);
+            SendMessageW(hList, LVM_GETITEMTEXTW, (WPARAM)r, (LPARAM)&it);
+            output.append(CsvEscape(buf, sep));
+            output.push_back(c + 1 < colCount ? sep : L'\n');
+        }
+    }
+
+    // Save File dialog
+    wchar_t file[MAX_PATH] = L"";
+    wcsncpy_s(file, suggestedName, _TRUNCATE);
+
+    OPENFILENAMEW ofn{}; ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter =
+        L"CSV (Comma/Locale separated) (*.csv)\0*.csv\0"
+        L"All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = (DWORD)_countof(file);
+    ofn.lpstrTitle = dlgTitle;
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+    ofn.lpstrDefExt = L"csv";
+
+    if (!GetSaveFileNameW(&ofn)) return false; // cancelled
+
+    if (!WriteUtf8File(file, output)) {
+        MessageBoxW(owner, L"Failed to write the file.", szTitle, MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    MessageBoxW(owner, L"Report saved.", szTitle, MB_OK | MB_ICONINFORMATION);
+    return true;
 }
 
 // Update Save dialog to prefer TSV (tab-separated) and keep UTF-8 with BOM
@@ -211,6 +303,7 @@ static bool CopyListViewAsTsvToClipboard(HWND owner, HWND hList)
     if (!hMem) return false;
 
     void* p = GlobalLock(hMem);
+    if (!p) { GlobalFree(hMem); return false; } // FIX: check for nullptr before memcpy
     memcpy(p, output.c_str(), bytes);
     GlobalUnlock(hMem);
 
@@ -1592,7 +1685,7 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         }
         if (LOWORD(wParam) == IDC_REPORTALL_SAVE)
         {
-            if (st) SaveListViewAsText(hWnd, st->hList, L"Report_Averages.tsv", L"Save Averages Report As");
+            if (st) SaveListViewAsCsv(hWnd, st->hList, L"Report_Averages.csv", L"Save Averages Report As");
             return 0;
         }
         break;
@@ -2038,7 +2131,7 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             return 0;
 
         case IDC_REPORTDATES_SAVE: // Save
-            if (st) SaveListViewAsText(hWnd, st->hList, L"Report_ByDates.tsv", L"Save By Dates Report As");
+            if (st) SaveListViewAsCsv(hWnd, st->hList, L"Report_ByDates.csv", L"Save By Dates Report As");
             return 0;
         }
         break;
