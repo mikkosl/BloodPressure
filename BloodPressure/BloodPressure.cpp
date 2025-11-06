@@ -110,6 +110,7 @@ static bool WriteUtf8File(const wchar_t* path, const std::wstring& text)
     return ok && written == bytes.size();
 }
 
+// Update Save dialog to prefer TSV (tab-separated) and keep UTF-8 with BOM
 static bool SaveListViewAsText(HWND owner, HWND hList, const wchar_t* suggestedName, const wchar_t* dlgTitle)
 {
     if (!IsWindow(hList)) {
@@ -122,7 +123,7 @@ static bool SaveListViewAsText(HWND owner, HWND hList, const wchar_t* suggestedN
 
     HWND hHeader = (HWND)SendMessageW(hList, LVM_GETHEADER, 0, 0);
     int colCount = hHeader ? (int)SendMessageW(hHeader, HDM_GETITEMCOUNT, 0, 0) : 0;
-    if (colCount <= 0) colCount = 1; // fallback
+    if (colCount <= 0) colCount = 1;
 
     // Header line
     for (int c = 0; c < colCount; ++c) {
@@ -146,18 +147,21 @@ static bool SaveListViewAsText(HWND owner, HWND hList, const wchar_t* suggestedN
         }
     }
 
-    // Save File dialog
+    // Save File dialog (prefer .tsv so apps split on tabs automatically)
     wchar_t file[MAX_PATH] = L"";
     wcsncpy_s(file, suggestedName, _TRUNCATE);
 
     OPENFILENAMEW ofn{}; ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
-    ofn.lpstrFilter = L"Text file (*.txt)\0*.txt\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFilter =
+        L"Tab-separated (*.tsv)\0*.tsv\0"
+        L"Text (*.txt)\0*.txt\0"
+        L"All Files (*.*)\0*.*\0";
     ofn.lpstrFile = file;
     ofn.nMaxFile = (DWORD)_countof(file);
     ofn.lpstrTitle = dlgTitle;
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
-    ofn.lpstrDefExt = L"txt";
+    ofn.lpstrDefExt = L"tsv";
 
     if (!GetSaveFileNameW(&ofn)) return false; // cancelled
 
@@ -167,6 +171,53 @@ static bool SaveListViewAsText(HWND owner, HWND hList, const wchar_t* suggestedN
     }
 
     MessageBoxW(owner, L"Report saved.", szTitle, MB_OK | MB_ICONINFORMATION);
+    return true;
+}
+
+// Add this helper near SaveListViewAsText
+static bool CopyListViewAsTsvToClipboard(HWND owner, HWND hList)
+{
+    if (!IsWindow(hList)) return false;
+
+    std::wstring output;
+
+    HWND hHeader = (HWND)SendMessageW(hList, LVM_GETHEADER, 0, 0);
+    int colCount = hHeader ? (int)SendMessageW(hHeader, HDM_GETITEMCOUNT, 0, 0) : 0;
+    if (colCount <= 0) colCount = 1;
+
+    // Header
+    for (int c = 0; c < colCount; ++c) {
+        HDITEMW hd{}; hd.mask = HDI_TEXT;
+        wchar_t hbuf[128] = L"";
+        hd.pszText = hbuf; hd.cchTextMax = (int)_countof(hbuf);
+        if (hHeader) SendMessageW(hHeader, HDM_GETITEMW, (WPARAM)c, (LPARAM)&hd);
+        output.append(hbuf);
+        output.append(c + 1 < colCount ? L"\t" : L"\r\n");
+    }
+    // Rows
+    int rowCount = (int)SendMessageW(hList, LVM_GETITEMCOUNT, 0, 0);
+    for (int r = 0; r < rowCount; ++r) {
+        for (int c = 0; c < colCount; ++c) {
+            wchar_t buf[512] = L"";
+            LVITEMW it{}; it.iSubItem = c; it.pszText = buf; it.cchTextMax = (int)_countof(buf);
+            SendMessageW(hList, LVM_GETITEMTEXTW, (WPARAM)r, (LPARAM)&it);
+            output.append(buf);
+            output.append(c + 1 < colCount ? L"\t" : L"\r\n");
+        }
+    }
+
+    const SIZE_T bytes = (output.size() + 1) * sizeof(wchar_t);
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!hMem) return false;
+
+    void* p = GlobalLock(hMem);
+    memcpy(p, output.c_str(), bytes);
+    GlobalUnlock(hMem);
+
+    if (!OpenClipboard(owner)) { GlobalFree(hMem); return false; }
+    EmptyClipboard();
+    SetClipboardData(CF_UNICODETEXT, hMem); // ownership passes to the clipboard
+    CloseClipboard();
     return true;
 }
 
@@ -1456,6 +1507,21 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
 
         return 0;
 
+    case WM_NOTIFY:
+    {
+        if (!st) break;
+        auto hdr = reinterpret_cast<LPNMHDR>(lParam);
+        if (hdr->hwndFrom == st->hList && hdr->code == LVN_KEYDOWN)
+        {
+            auto p = reinterpret_cast<LPNMLVKEYDOWN>(lParam);
+            if ((GetKeyState(VK_CONTROL) & 0x8000) && (p->wVKey == 'C' || p->wVKey == VK_INSERT)) {
+                CopyListViewAsTsvToClipboard(hWnd, st->hList);
+                return 0;
+            }
+        }
+    }
+    break;
+
     case WM_SIZE:
     {
         if (!st) break;
@@ -1501,6 +1567,10 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
 
     // Inside ReportAllWndProc(...), add:
     case WM_KEYDOWN:
+        if ((GetKeyState(VK_CONTROL) & 0x8000) && (wParam == 'C')) {
+            if (st && st->hList) CopyListViewAsTsvToClipboard(hWnd, st->hList);
+            return 0;
+        }
         if (wParam == VK_RETURN) { SendMessageW(hWnd, WM_COMMAND, IDOK, 0); return 0; }
         if (wParam == VK_ESCAPE) { DestroyWindow(hWnd); return 0; }
         break;
@@ -1513,7 +1583,7 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         }
         if (LOWORD(wParam) == IDC_REPORTALL_SAVE)
         {
-            if (st) SaveListViewAsText(hWnd, st->hList, L"Report_Averages.txt", L"Save Averages Report As");
+            if (st) SaveListViewAsText(hWnd, st->hList, L"Report_Averages.tsv", L"Save Averages Report As");
             return 0;
         }
         break;
@@ -1889,10 +1959,20 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
     }
     return 0;
 
+    // In ReportDatesWndProc(...) extend the existing WM_NOTIFY to also handle LVN_KEYDOWN from the ListView.
     case WM_NOTIFY:
     {
         if (!st) break;
         auto nm = reinterpret_cast<LPNMHDR>(lParam);
+
+        // New: enable Ctrl+C copy when focus is in the ListView
+        if (nm->hwndFrom == st->hList && nm->code == LVN_KEYDOWN) {
+            auto p = reinterpret_cast<LPNMLVKEYDOWN>(lParam);
+            if ((GetKeyState(VK_CONTROL) & 0x8000) && (p->wVKey == 'C' || p->wVKey == VK_INSERT)) {
+                CopyListViewAsTsvToClipboard(hWnd, st->hList);
+                return 0;
+            }
+        }
 
         const bool isStart = (nm->idFrom == IDC_DATES_START);
         const bool isEnd = (nm->idFrom == IDC_DATES_END);
@@ -1906,7 +1986,7 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
                     else         st->stEnd = pdt->st;
                 }
             }
-            else // DTN_CLOSEUP: ensure we have the committed value
+            else
             {
                 DateTime_GetSystemtime(st->hStart, &st->stStart);
                 DateTime_GetSystemtime(st->hEnd, &st->stEnd);
@@ -1921,6 +2001,10 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
 
     // Inside ReportDatesWndProc(...), add:
     case WM_KEYDOWN:
+        if ((GetKeyState(VK_CONTROL) & 0x8000) && (wParam == 'C')) {
+            if (st && st->hList) CopyListViewAsTsvToClipboard(hWnd, st->hList);
+            return 0;
+        }
         if (wParam == VK_RETURN || wParam == VK_ESCAPE) {
             // Simulate pressing the Close button
             SendMessageW(hWnd, WM_COMMAND, IDCANCEL, 0);
@@ -1944,7 +2028,7 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             return 0;
 
         case IDC_REPORTDATES_SAVE: // Save
-            if (st) SaveListViewAsText(hWnd, st->hList, L"Report_ByDates.txt", L"Save By Dates Report As");
+            if (st) SaveListViewAsText(hWnd, st->hList, L"Report_ByDates.tsv", L"Save By Dates Report As");
             return 0;
         }
         break;
