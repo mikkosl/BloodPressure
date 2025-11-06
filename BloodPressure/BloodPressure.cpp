@@ -55,6 +55,8 @@ static inline void LV_SetItemTextW(HWND hwndLV, int i, int iSub, const wchar_t* 
 #define IDM_PAGE_NEXT      40006
 #define IDC_DATES_START    43010
 #define IDC_DATES_END      43011
+#define IDC_REPORTALL_SAVE   43012
+#define IDC_REPORTDATES_SAVE 43013
 
 // Global Variables:
 HINSTANCE hInst;                                // current instance
@@ -81,6 +83,92 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND, UINT, WPARAM, LPARAM);
 static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void ShowAddReadingDialog(HWND owner);
 static void ShowEditReadingDialog(HWND owner, const Reading& r);
+
+// Add these helpers near other helper functions (e.g., below IdealCtlHeightFromFont)
+
+static bool WriteUtf8File(const wchar_t* path, const std::wstring& text)
+{
+    int needed = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), nullptr, 0, nullptr, nullptr);
+    if (needed < 0) return false;
+
+    std::vector<char> bytes;
+    bytes.reserve(3 + needed);
+    // UTF-8 BOM
+    bytes.push_back('\xEF');
+    bytes.push_back('\xBB');
+    bytes.push_back('\xBF');
+    bytes.resize(3 + needed);
+
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), bytes.data() + 3, needed, nullptr, nullptr);
+
+    HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+
+    DWORD written = 0;
+    BOOL ok = WriteFile(h, bytes.data(), (DWORD)bytes.size(), &written, nullptr);
+    CloseHandle(h);
+    return ok && written == bytes.size();
+}
+
+static bool SaveListViewAsText(HWND owner, HWND hList, const wchar_t* suggestedName, const wchar_t* dlgTitle)
+{
+    if (!IsWindow(hList)) {
+        MessageBoxW(owner, L"Report view is not available.", szTitle, MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    // Build text from ListView: header + rows (tab-separated)
+    std::wstring output;
+
+    HWND hHeader = (HWND)SendMessageW(hList, LVM_GETHEADER, 0, 0);
+    int colCount = hHeader ? (int)SendMessageW(hHeader, HDM_GETITEMCOUNT, 0, 0) : 0;
+    if (colCount <= 0) colCount = 1; // fallback
+
+    // Header line
+    for (int c = 0; c < colCount; ++c) {
+        HDITEMW hd{}; hd.mask = HDI_TEXT;
+        wchar_t hbuf[128] = L"";
+        hd.pszText = hbuf; hd.cchTextMax = (int)_countof(hbuf);
+        if (hHeader) SendMessageW(hHeader, HDM_GETITEMW, (WPARAM)c, (LPARAM)&hd);
+        output.append(hbuf);
+        output.append(c + 1 < colCount ? L"\t" : L"\r\n");
+    }
+
+    // Rows
+    int rowCount = (int)SendMessageW(hList, LVM_GETITEMCOUNT, 0, 0);
+    for (int r = 0; r < rowCount; ++r) {
+        for (int c = 0; c < colCount; ++c) {
+            wchar_t buf[512] = L"";
+            LVITEMW it{}; it.iSubItem = c; it.pszText = buf; it.cchTextMax = (int)_countof(buf);
+            SendMessageW(hList, LVM_GETITEMTEXTW, (WPARAM)r, (LPARAM)&it);
+            output.append(buf);
+            output.append(c + 1 < colCount ? L"\t" : L"\r\n");
+        }
+    }
+
+    // Save File dialog
+    wchar_t file[MAX_PATH] = L"";
+    wcsncpy_s(file, suggestedName, _TRUNCATE);
+
+    OPENFILENAMEW ofn{}; ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"Text file (*.txt)\0*.txt\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = (DWORD)_countof(file);
+    ofn.lpstrTitle = dlgTitle;
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+    ofn.lpstrDefExt = L"txt";
+
+    if (!GetSaveFileNameW(&ofn)) return false; // cancelled
+
+    if (!WriteUtf8File(file, output)) {
+        MessageBoxW(owner, L"Failed to write the file.", szTitle, MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    MessageBoxW(owner, L"Report saved.", szTitle, MB_OK | MB_ICONINFORMATION);
+    return true;
+}
 
 static void ShowGettingStarted(HWND owner)
 {
@@ -1159,6 +1247,7 @@ struct ReportAllState
     HWND hClose{};   // Close button
     std::vector<std::wstring> lines; // fallback text to paint (no data)
     HWND dtpH{};     // <-- Add this line to fix C2039 error
+    HWND hSave{}; // <-- Save button
 };
 
 // ------------------------------
@@ -1242,7 +1331,7 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
             }
         }
 
-        // OK button
+        // Close button
         const int margin = 10;
         st->hClose = CreateWindowExW(0, L"BUTTON", L"Close",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
@@ -1250,11 +1339,20 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         if (!st->hClose) {
             DWORD err = GetLastError();
             wchar_t msg[128];
-            swprintf_s(msg, L"OK button creation failed (err=%lu).", err);
+            swprintf_s(msg, L"Close button creation failed (err=%lu).", err);
             MessageBoxW(hWnd, msg, szTitle, MB_OK | MB_ICONERROR);
         } else {
             SendMessageW(st->hClose, WM_SETFONT, (WPARAM)st->hFont, TRUE);
             ShowWindow(st->hClose, SW_SHOW);
+        }
+
+        // Save button
+        st->hSave = CreateWindowExW(0, L"BUTTON", L"Save...",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            margin, 0, 80, 26, hWnd, (HMENU)IDC_REPORTALL_SAVE, hInst, nullptr);
+        if (st->hSave) {
+            SendMessageW(st->hSave, WM_SETFONT, (WPARAM)st->hFont, TRUE);
+            ShowWindow(st->hSave, SW_SHOW);
         }
 
         // ListView (table) for the averages
@@ -1341,6 +1439,11 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
             SetWindowPos(st->hClose, nullptr, rcClient.right - (btnW + margin), rcClient.bottom - (btnH + margin),
                 btnW, btnH, SWP_NOZORDER);
         }
+        if (st->hSave) {
+            int xClose = rcClient.right - (btnW + margin);
+            SetWindowPos(st->hSave, nullptr, xClose - (btnW + margin), rcClient.bottom - (btnH + margin),
+                btnW, btnH, SWP_NOZORDER);
+        }
         if (st->hList) {
             int listRight = rcClient.right - margin;
             int listBottom = (st->hClose ? (rcClient.bottom - (btnH + 2 * margin)) : (rcClient.bottom - margin));
@@ -1362,6 +1465,11 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         const int btnW = 80, btnH = 26;
         if (st->hClose) {
             SetWindowPos(st->hClose, nullptr, rc.right - (btnW + margin), rc.bottom - (btnH + margin),
+                btnW, btnH, SWP_NOZORDER);
+        }
+        if (st->hSave) {
+            int xClose = rc.right - (btnW + margin);
+            SetWindowPos(st->hSave, nullptr, xClose - (btnW + margin), rc.bottom - (btnH + margin),
                 btnW, btnH, SWP_NOZORDER);
         }
         if (st->hList) {
@@ -1401,6 +1509,11 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         if (LOWORD(wParam) == IDOK)
         {
             DestroyWindow(hWnd);
+            return 0;
+        }
+        if (LOWORD(wParam) == IDC_REPORTALL_SAVE)
+        {
+            if (st) SaveListViewAsText(hWnd, st->hList, L"Report_Averages.txt", L"Save Averages Report As");
             return 0;
         }
         break;
@@ -1483,6 +1596,7 @@ struct ReportDatesState
 
     // FIX: Add missing hClose member to match ReportAllState and resolve C2039
     HWND hClose{}; // Add this line
+    HWND hSave{}; // <-- Save button
 };
 
 // Fills the ListView with Morning/Evening/Overall averages in the given date range
@@ -1659,6 +1773,11 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             margin, 0, 80, 26, hWnd, (HMENU)IDCANCEL, hInst, nullptr);
 
+        // Save button
+        st->hSave = CreateWindowExW(0, L"BUTTON", L"Save...",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            margin, 0, 80, 26, hWnd, (HMENU)IDC_REPORTDATES_SAVE, hInst, nullptr);
+
         // Apply fonts
         HWND cts[] = { st->hStart, st->hEnd, st->hClose };
         for (HWND c : cts) { if (c) SendMessageW(c, WM_SETFONT, (WPARAM)st->hFont, TRUE); }
@@ -1715,6 +1834,11 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             SetWindowPos(st->hClose, nullptr, rcClient.right - (btnW + margin), rcClient.bottom - (btnH + margin),
                 btnW, btnH, SWP_NOZORDER);
         }
+        if (st->hSave) {
+            int xClose = rcClient.right - (btnW + margin);
+            SetWindowPos(st->hSave, nullptr, xClose - (btnW + margin), rcClient.bottom - (btnH + margin),
+                btnW, btnH, SWP_NOZORDER);
+        }
         if (st->hList) {
             int listRight = rcClient.right - margin;
             int listBottom = (st->hClose ? (rcClient.bottom - (btnH + 2 * margin)) : (rcClient.bottom - margin));
@@ -1741,6 +1865,11 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
         // Buttons bottom-right
         if (st->hClose) {
             SetWindowPos(st->hClose, nullptr, rc.right - (btnW + margin), rc.bottom - (btnH + margin),
+                btnW, btnH, SWP_NOZORDER);
+        }
+        if (st->hSave) {
+            int xClose = rc.right - (btnW + margin);
+            SetWindowPos(st->hSave, nullptr, xClose - (btnW + margin), rc.bottom - (btnH + margin),
                 btnW, btnH, SWP_NOZORDER);
         }
         if (st->hList) {
@@ -1812,6 +1941,10 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
 
         case IDCANCEL: // Close
             DestroyWindow(hWnd);
+            return 0;
+
+        case IDC_REPORTDATES_SAVE: // Save
+            if (st) SaveListViewAsText(hWnd, st->hList, L"Report_ByDates.txt", L"Save By Dates Report As");
             return 0;
         }
         break;
