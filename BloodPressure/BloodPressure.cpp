@@ -663,6 +663,14 @@ static int DateKeyFromTm(const std::tm& t)
     return (t.tm_year + 1900) * 10000 + (t.tm_mon + 1) * 100 + t.tm_mday;
 }
 
+static int CompareSystemTimes(const SYSTEMTIME& a, const SYSTEMTIME& b)
+{
+    FILETIME fa{}, fb{};
+    SystemTimeToFileTime(&a, &fa);
+    SystemTimeToFileTime(&b, &fb);
+    return CompareFileTime(&fa, &fb); // <0 if a<b, 0 if equal, >0 if a>b
+}
+
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
                      _In_ LPWSTR    lpCmdLine,
@@ -1971,6 +1979,8 @@ struct ReportDatesState
     HWND hClose{}; // Add this line
     HWND hSave{}; // <-- Save button
     HWND hPrint{}; // <-- Print button
+
+    bool suppressNotify{}; // <-- guard re-entrant DTP updates
 };
 
 // Fills the ListView with Morning/Evening/Overall averages in the given date range
@@ -2112,7 +2122,8 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
         st = new ReportDatesState();
         st->hwnd = hWnd;
         SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)st);
-        
+        st->suppressNotify = false;
+
         // Ideal height for DTPs (compute from current UI font to avoid clipping)
         st->dtpH = IdealCtlHeightFromFont(hWnd, st->hFont, 28, 10);
 
@@ -2151,6 +2162,10 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
         st->hSave = CreateWindowExW(0, L"BUTTON", L"Save...",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             margin, 0, 80, 26, hWnd, (HMENU)IDC_REPORTDATES_SAVE, hInst, nullptr);
+        if (st->hSave) {
+            SendMessageW(st->hSave, WM_SETFONT, (WPARAM)st->hFont, TRUE); // make font match other buttons
+            ShowWindow(st->hSave, SW_SHOW);
+        }
 
         // Print button
         st->hPrint = CreateWindowExW(0, L"BUTTON", L"Print...",
@@ -2162,7 +2177,7 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
         }
         
         // Apply fonts
-        HWND cts[] = { st->hStart, st->hEnd, st->hClose };
+        HWND cts[] = { st->hStart, st->hEnd, st->hClose, st->hSave, st->hPrint };
         for (HWND c : cts) { if (c) SendMessageW(c, WM_SETFONT, (WPARAM)st->hFont, TRUE); }
 
         // Initialize dates to today
@@ -2309,6 +2324,22 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
                 DateTime_GetSystemtime(st->hEnd, &st->stEnd);
             }
 
+            // Enforce chronological order: start <= end
+            if (!st->suppressNotify && CompareSystemTimes(st->stStart, st->stEnd) > 0) {
+                st->suppressNotify = true;
+                if (isStart) {
+                    // Start moved after End -> move End to Start
+                    st->stEnd = st->stStart;
+                    DateTime_SetSystemtime(st->hEnd, GDT_VALID, &st->stEnd);
+                }
+                else {
+                    // End moved before Start -> move Start to End
+                    st->stStart = st->stEnd;
+                    DateTime_SetSystemtime(st->hStart, GDT_VALID, &st->stStart);
+                }
+                st->suppressNotify = false;
+            }
+            
             FillDatesAveragesList(st->hList, st->stStart, st->stEnd);
             ListView_AutoSizeToHeaderAndContent(st->hList);
             InvalidateRect(st->hList, nullptr, FALSE);
@@ -2337,6 +2368,15 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             if (st) {
                 DateTime_GetSystemtime(st->hStart, &st->stStart);
                 DateTime_GetSystemtime(st->hEnd, &st->stEnd);
+
+                if (CompareSystemTimes(st->stStart, st->stEnd) > 0) {
+                    // Normalize UI and state so start <= end
+                    st->suppressNotify = true;
+                    st->stEnd = st->stStart;
+                    DateTime_SetSystemtime(st->hEnd, GDT_VALID, &st->stEnd);
+                    st->suppressNotify = false;
+                }
+
                 FillDatesAveragesList(st->hList, st->stStart, st->stEnd);
                 ListView_AutoSizeToHeaderAndContent(st->hList);
             }
