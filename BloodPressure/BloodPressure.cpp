@@ -82,6 +82,23 @@ static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 static void ShowAddReadingDialog(HWND owner);
 static void ShowEditReadingDialog(HWND owner, const Reading& r);
 
+static void ShowGettingStarted(HWND owner)
+{
+    const wchar_t* msg =
+        L"Getting Started\n"
+        L"\n"
+        L"1) File -> Create DB to create a new database, or File -> Open DB to open an existing one.\n"
+        L"2) Reading -> Add to enter your first blood pressure reading.\n"
+        L"3) Use PageUp/PageDown to navigate pages.\n"
+        L"4) Right-click the main window for a quick context menu.\n"
+        L"5) Reports -> Averages and Reports -> By Dates to view summaries.\n"
+        L"\n"
+        L"Tips:\n"
+        L"- In the By Dates report, press Enter or Esc to close the window.\n"
+        L"- Use the Close button at bottom-right to dismiss report windows.";
+    MessageBoxW(owner, msg, L"Getting Started", MB_OK | MB_ICONINFORMATION);
+}
+
 // Add near other helpers
 inline void EnsureWindowOnScreen(HWND hWnd)
 {
@@ -329,6 +346,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             int wmId = LOWORD(wParam);
             switch (wmId)
             {
+            case IDM_GETTINGSTARTED:
+                ShowGettingStarted(hWnd);
+                break;
             case IDM_ABOUT:
                 DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
                 break;
@@ -424,6 +444,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 AppendMenuW(hMenu, MF_STRING | (canPrev ? 0 : MF_GRAYED), IDM_PAGE_PREV, L"Previous Page");
                 AppendMenuW(hMenu, MF_STRING | (canNext ? 0 : MF_GRAYED), IDM_PAGE_NEXT, L"Next Page");
                 POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+                AppendMenuW(hMenu, MF_STRING, IDM_GETTINGSTARTED, L"Getting Started...");
                 ClientToScreen(hWnd, &pt);
                 TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_LEFTALIGN, pt.x, pt.y, 0, hWnd, nullptr);
                 DestroyMenu(hMenu);
@@ -439,7 +461,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             SendMessage(hWnd, WM_COMMAND, IDM_PAGE_NEXT, 0);
             return 0;
         }
-        break; 
+        if (wParam == VK_F1) { // Getting Started
+            ShowGettingStarted(hWnd);
+            return 0;
+        }
+        break;
     case WM_PAINT:
         {
             PAINTSTRUCT ps;
@@ -523,10 +549,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 // No DB open yet: show a friendly hint
                 const wchar_t* msg1 = L"No database is open.";
                 const wchar_t* msg2 = L"Use File -> Create DB or File -> Open DB to begin.";
-                TextOutW(hdc, 10, y, msg1, lstrlenW(msg1));
-                y += 17;
-                TextOutW(hdc, 10, y, msg2, lstrlenW(msg2));
-                y += 17;
+                const wchar_t* gs1 = L"Getting Started:";
+                const wchar_t* gs2 = L"1) Create/Open a DB, then use Reading -> Add to enter a reading.";
+                const wchar_t* gs3 = L"2) PageUp/PageDown to navigate pages.";
+                const wchar_t* gs4 = L"3) Reports -> Averages / By Dates for summaries.";
+                const wchar_t* gs5 = L"4) Press F1 anytime to view these steps.";
+
+                TextOutW(hdc, 10, y, msg1, lstrlenW(msg1)); y += 17;
+                TextOutW(hdc, 10, y, msg2, lstrlenW(msg2)); y += 25;
+
+                TextOutW(hdc, 10, y, gs1, lstrlenW(gs1)); y += 17;
+                TextOutW(hdc, 20, y, gs2, lstrlenW(gs2)); y += 17;
+                TextOutW(hdc, 20, y, gs3, lstrlenW(gs3)); y += 17;
+                TextOutW(hdc, 20, y, gs4, lstrlenW(gs4)); y += 17;
+                TextOutW(hdc, 20, y, gs5, lstrlenW(gs5)); y += 17;
             }
 
             EndPaint(hWnd, &ps);
