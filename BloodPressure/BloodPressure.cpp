@@ -57,6 +57,8 @@ static inline void LV_SetItemTextW(HWND hwndLV, int i, int iSub, const wchar_t* 
 #define IDC_DATES_END      43011
 #define IDC_REPORTALL_SAVE   43012
 #define IDC_REPORTDATES_SAVE 43013
+#define IDC_REPORTALL_PRINT    43014
+#define IDC_REPORTDATES_PRINT  43015
 
 // Global Variables:
 HINSTANCE hInst;                                // current instance
@@ -311,6 +313,185 @@ static bool CopyListViewAsTsvToClipboard(HWND owner, HWND hList)
     EmptyClipboard();
     SetClipboardData(CF_UNICODETEXT, hMem); // ownership passes to the clipboard
     CloseClipboard();
+    return true;
+}
+
+// Add this helper near the other helpers (below Save/Copy helpers)
+static bool PrintListView(HWND owner, HWND hList, const wchar_t* docTitle)
+{
+    if (!IsWindow(hList)) {
+        MessageBoxW(owner, L"Report view is not available.", szTitle, MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    // 1) Show printer selection dialog and get a printer DC
+    PRINTDLGW pd{};
+    pd.lStructSize = sizeof(pd);
+    pd.Flags = PD_RETURNDC | PD_NOSELECTION | PD_NOPAGENUMS | PD_USEDEVMODECOPIESANDCOLLATE;
+    pd.hwndOwner = owner;
+
+    if (!PrintDlgW(&pd)) {
+        // canceled or failed
+        return false;
+    }
+
+    HDC hdc = pd.hDC;
+    if (!hdc) {
+        if (pd.hDevMode) GlobalFree(pd.hDevMode);
+        if (pd.hDevNames) GlobalFree(pd.hDevNames);
+        MessageBoxW(owner, L"Failed to get printer device context.", szTitle, MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    // 2) Gather data from the ListView
+    HWND hHeader = (HWND)SendMessageW(hList, LVM_GETHEADER, 0, 0);
+    int colCount = hHeader ? (int)SendMessageW(hHeader, HDM_GETITEMCOUNT, 0, 0) : 0;
+    if (colCount <= 0) colCount = 1;
+
+    // Header texts
+    std::vector<std::wstring> headers;
+    headers.reserve(colCount);
+    for (int c = 0; c < colCount; ++c) {
+        HDITEMW hd{}; hd.mask = HDI_TEXT;
+        wchar_t hbuf[256] = L"";
+        hd.pszText = hbuf; hd.cchTextMax = (int)_countof(hbuf);
+        if (hHeader) SendMessageW(hHeader, HDM_GETITEMW, (WPARAM)c, (LPARAM)&hd);
+        headers.emplace_back(hbuf);
+    }
+
+    // Rows
+    int rowCount = (int)SendMessageW(hList, LVM_GETITEMCOUNT, 0, 0);
+    std::vector<std::vector<std::wstring>> rows;
+    rows.resize(rowCount, std::vector<std::wstring>(colCount));
+    for (int r = 0; r < rowCount; ++r) {
+        for (int c = 0; c < colCount; ++c) {
+            wchar_t buf[512] = L"";
+            LVITEMW it{}; it.iSubItem = c; it.pszText = buf; it.cchTextMax = (int)_countof(buf);
+            SendMessageW(hList, LVM_GETITEMTEXTW, (WPARAM)r, (LPARAM)&it);
+            rows[r][c] = buf;
+        }
+    }
+
+    // 3) Set up page metrics
+    const int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
+    const int dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
+    const int physW = GetDeviceCaps(hdc, PHYSICALWIDTH);
+    const int physH = GetDeviceCaps(hdc, PHYSICALHEIGHT);
+    const int offsetX = GetDeviceCaps(hdc, PHYSICALOFFSETX);
+    const int offsetY = GetDeviceCaps(hdc, PHYSICALOFFSETY);
+
+    // 1 inch margins
+    const int marginX = dpiX;
+    const int marginY = dpiY;
+
+    const int printableLeft = max(0, marginX - offsetX);
+    const int printableTop = max(0, marginY - offsetY);
+    const int printableRight = physW - max(0, marginX - offsetX);
+    const int printableBottom = physH - max(0, marginY - offsetY);
+    const int printableW = max(0, printableRight - printableLeft);
+    const int printableH = max(0, printableBottom - printableTop);
+
+    // Fonts
+    const int ptBody = 10;
+    const int ptHeader = 11;
+    HFONT hBody = CreateFontW(-MulDiv(ptBody, dpiY, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Consolas");
+    if (!hBody) hBody = (HFONT)GetStockObject(SYSTEM_FONT);
+
+    HFONT hHdrFont = CreateFontW(-MulDiv(ptHeader, dpiY, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Consolas");
+    if (!hHdrFont) hHdrFont = hBody;
+
+    TEXTMETRICW tm{};
+    HGDIOBJ oldFont = SelectObject(hdc, hBody);
+    GetTextMetricsW(hdc, &tm);
+    const int lineH = max((int)(tm.tmHeight + tm.tmExternalLeading), MulDiv(14, dpiY, 96)); // ~14px at 96dpi
+
+    // Column widths: evenly divide printable width
+    std::vector<int> colLeft(colCount + 1, 0);
+    int colW = (colCount > 0) ? printableW / colCount : printableW;
+    for (int c = 0; c < colCount; ++c) colLeft[c] = printableLeft + c * colW;
+    colLeft[colCount] = printableLeft + printableW;
+
+    // 4) Start document
+    DOCINFOW di{}; di.cbSize = sizeof(di); di.lpszDocName = docTitle;
+    if (StartDocW(hdc, &di) <= 0) {
+        SelectObject(hdc, oldFont);
+        if (hBody && hBody != GetStockObject(SYSTEM_FONT)) DeleteObject(hBody);
+        if (hHdrFont && hHdrFont != hBody) DeleteObject(hHdrFont);
+        DeleteDC(hdc);
+        if (pd.hDevMode) GlobalFree(pd.hDevMode);
+        if (pd.hDevNames) GlobalFree(pd.hDevNames);
+        MessageBoxW(owner, L"Failed to start the print job.", szTitle, MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    // Compute rows per page (reserve 2 lines: title + header + small spacing)
+    const int usableH = printableH;
+    const int headerLines = 2; // title + column header
+    const int rowsPerPage = max(1, (usableH / lineH) - headerLines);
+
+    int printed = 0;
+    int pageNo = 0;
+
+    while (printed < rowCount || (rowCount == 0 && pageNo == 0)) {
+        if (StartPage(hdc) <= 0) break;
+        int y = printableTop;
+
+        // Title
+        SelectObject(hdc, hHdrFont);
+        RECT rcTitle{ printableLeft, y, printableLeft + printableW, y + lineH };
+        DrawTextW(hdc, docTitle, -1, &rcTitle, DT_LEFT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS);
+        y += lineH;
+
+        // Column headers
+        SelectObject(hdc, hHdrFont);
+        for (int c = 0; c < colCount; ++c) {
+            RECT rc{ colLeft[c], y, colLeft[c + 1], y + lineH };
+            DrawTextW(hdc, headers[c].c_str(), -1, &rc, DT_LEFT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS | DT_VCENTER);
+        }
+        y += lineH;
+
+        // Rows on this page
+        SelectObject(hdc, hBody);
+        int onThisPage = min(rowsPerPage, rowCount - printed);
+        for (int i = 0; i < onThisPage; ++i) {
+            for (int c = 0; c < colCount; ++c) {
+                RECT rc{ colLeft[c], y, colLeft[c + 1], y + lineH };
+                const std::wstring& cell = rows[printed + i][c];
+                DrawTextW(hdc, cell.c_str(), -1, &rc, DT_LEFT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS | DT_VCENTER);
+            }
+            y += lineH;
+        }
+
+        // Footer: page number (optional)
+        {
+            wchar_t pg[64];
+            swprintf_s(pg, L"Page %d", pageNo + 1);
+            RECT rcPg{ printableLeft, printableBottom - lineH, printableLeft + printableW, printableBottom };
+            DrawTextW(hdc, pg, -1, &rcPg, DT_RIGHT | DT_NOPREFIX | DT_SINGLELINE);
+        }
+
+        if (EndPage(hdc) <= 0) break;
+        printed += onThisPage;
+        ++pageNo;
+
+        // Handle empty report: still print one page with just header/title
+        if (rowCount == 0) break;
+    }
+
+    EndDoc(hdc);
+
+    // Cleanup
+    SelectObject(hdc, oldFont);
+    if (hBody && hBody != GetStockObject(SYSTEM_FONT)) DeleteObject(hBody);
+    if (hHdrFont && hHdrFont != hBody) DeleteObject(hHdrFont);
+    DeleteDC(hdc);
+    if (pd.hDevMode) GlobalFree(pd.hDevMode);
+    if (pd.hDevNames) GlobalFree(pd.hDevNames);
+
     return true;
 }
 
@@ -1413,6 +1594,7 @@ struct ReportAllState
     std::vector<std::wstring> lines; // fallback text to paint (no data)
     HWND dtpH{};     // <-- Add this line to fix C2039 error
     HWND hSave{}; // <-- Save button
+    HWND hPrint{}; // <-- Print button
 };
 
 // ------------------------------
@@ -1518,6 +1700,15 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         if (st->hSave) {
             SendMessageW(st->hSave, WM_SETFONT, (WPARAM)st->hFont, TRUE);
             ShowWindow(st->hSave, SW_SHOW);
+        }
+
+        // Print button
+        st->hPrint = CreateWindowExW(0, L"BUTTON", L"Print...",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            margin, 0, 80, 26, hWnd, (HMENU)IDC_REPORTALL_PRINT, hInst, nullptr);
+        if (st->hPrint) {
+            SendMessageW(st->hPrint, WM_SETFONT, (WPARAM)st->hFont, TRUE);
+            ShowWindow(st->hPrint, SW_SHOW);
         }
 
         // ListView (table) for the averages
@@ -1655,6 +1846,11 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
             SetWindowPos(st->hSave, nullptr, xClose - (btnW + margin), rc.bottom - (btnH + margin),
                 btnW, btnH, SWP_NOZORDER);
         }
+        if (st->hPrint) {
+            int xSave = rc.right - (2 * (btnW + margin));
+            SetWindowPos(st->hPrint, nullptr, xSave - (btnW + margin), rc.bottom - (btnH + margin),
+                btnW, btnH, SWP_NOZORDER);
+        }
         if (st->hList) {
             int top = margin * 2;
             top += 24; // simple top offset; no DTPs in this window
@@ -1686,6 +1882,11 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         if (LOWORD(wParam) == IDC_REPORTALL_SAVE)
         {
             if (st) SaveListViewAsCsv(hWnd, st->hList, L"Report_Averages.csv", L"Save Averages Report As");
+            return 0;
+        }
+        if (LOWORD(wParam) == IDC_REPORTALL_PRINT)
+        {
+            if (st) PrintListView(hWnd, st->hList, L"Report - Averages");
             return 0;
         }
         break;
@@ -1769,6 +1970,7 @@ struct ReportDatesState
     // FIX: Add missing hClose member to match ReportAllState and resolve C2039
     HWND hClose{}; // Add this line
     HWND hSave{}; // <-- Save button
+    HWND hPrint{}; // <-- Print button
 };
 
 // Fills the ListView with Morning/Evening/Overall averages in the given date range
@@ -1950,6 +2152,15 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             margin, 0, 80, 26, hWnd, (HMENU)IDC_REPORTDATES_SAVE, hInst, nullptr);
 
+        // Print button
+        st->hPrint = CreateWindowExW(0, L"BUTTON", L"Print...",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            margin, 0, 80, 26, hWnd, (HMENU)IDC_REPORTDATES_PRINT, hInst, nullptr);
+        if (st->hPrint) {
+            SendMessageW(st->hPrint, WM_SETFONT, (WPARAM)st->hFont, TRUE);
+            ShowWindow(st->hPrint, SW_SHOW);
+        }
+        
         // Apply fonts
         HWND cts[] = { st->hStart, st->hEnd, st->hClose };
         for (HWND c : cts) { if (c) SendMessageW(c, WM_SETFONT, (WPARAM)st->hFont, TRUE); }
@@ -2043,6 +2254,11 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             SetWindowPos(st->hSave, nullptr, xClose - (btnW + margin), rc.bottom - (btnH + margin),
                 btnW, btnH, SWP_NOZORDER);
         }
+        if (st->hPrint) {
+            int xSave = rc.right - (2 * (btnW + margin));
+            SetWindowPos(st->hPrint, nullptr, xSave - (btnW + margin), rc.bottom - (btnH + margin),
+                btnW, btnH, SWP_NOZORDER);
+        }
         if (st->hList) {
             int top = margin * 2;
 
@@ -2132,6 +2348,10 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
 
         case IDC_REPORTDATES_SAVE: // Save
             if (st) SaveListViewAsCsv(hWnd, st->hList, L"Report_ByDates.csv", L"Save By Dates Report As");
+            return 0;
+        
+        case IDC_REPORTDATES_PRINT: // Print
+            if (st) PrintListView(hWnd, st->hList, L"Report - By Dates");
             return 0;
         }
         break;
