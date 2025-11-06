@@ -81,7 +81,6 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND, UINT, WPARAM, LPARAM);
 static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void ShowAddReadingDialog(HWND owner);
 static void ShowEditReadingDialog(HWND owner, const Reading& r);
-static void ShowReportDatesResultsWindow(HWND owner, const SYSTEMTIME& stStart, const SYSTEMTIME& stEnd);
 
 // Add near other helpers
 inline void EnsureWindowOnScreen(HWND hWnd)
@@ -1123,6 +1122,7 @@ struct ReportAllState
     HWND hList{};    // ListView (table)
     HWND hClose{};   // Close button
     std::vector<std::wstring> lines; // fallback text to paint (no data)
+    HWND dtpH{};     // <-- Add this line to fix C2039 error
 };
 
 // ------------------------------
@@ -1207,10 +1207,10 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         }
 
         // OK button
-        const int marginRA = 10;
-        st->hClose = CreateWindowExW(0, L"BUTTON", L"OK",
+        const int margin = 10;
+        st->hClose = CreateWindowExW(0, L"BUTTON", L"Close",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-            marginRA, 0, 80, 26, hWnd, (HMENU)IDOK, hInst, nullptr);
+            margin, 0, 80, 26, hWnd, (HMENU)IDOK, hInst, nullptr);
         if (!st->hClose) {
             DWORD err = GetLastError();
             wchar_t msg[128];
@@ -1224,7 +1224,7 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         // ListView (table) for the averages
         st->hList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-            marginRA, marginRA, 100, 100, hWnd, (HMENU)42001, hInst, nullptr);
+            margin, margin, 100, 100, hWnd, (HMENU)42001, hInst, nullptr);
         if (!st->hList) {
             DWORD err = GetLastError();
             wchar_t msg[128];
@@ -1302,14 +1302,14 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         const int btnW = 80, btnH = 26;
 
         if (st->hClose) {
-            SetWindowPos(st->hClose, nullptr, rcClient.right - (btnW + marginRA), rcClient.bottom - (btnH + marginRA),
+            SetWindowPos(st->hClose, nullptr, rcClient.right - (btnW + margin), rcClient.bottom - (btnH + margin),
                 btnW, btnH, SWP_NOZORDER);
         }
         if (st->hList) {
-            int listRight = rcClient.right - marginRA;
-            int listBottom = (st->hClose ? (rcClient.bottom - (btnH + 2 * marginRA)) : (rcClient.bottom - marginRA));
-            SetWindowPos(st->hList, nullptr, marginRA, marginRA,
-                listRight - marginRA, listBottom - marginRA, SWP_NOZORDER);
+            int listRight = rcClient.right - margin;
+            int listBottom = (st->hClose ? (rcClient.bottom - (btnH + 2 * margin)) : (rcClient.bottom - margin));
+            SetWindowPos(st->hList, nullptr, margin, margin,
+                listRight - margin, listBottom - margin, SWP_NOZORDER);
         }
 
         CenterToOwner(hWnd, GetWindow(hWnd, GW_OWNER));
@@ -1329,10 +1329,23 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
                 btnW, btnH, SWP_NOZORDER);
         }
         if (st->hList) {
+            int top = margin * 2;
+            if (st->dtpH) {
+                // If st->dtpH is a HWND, get its height using GetWindowRect
+                RECT rc{};
+                if (GetWindowRect(st->dtpH, &rc)) {
+                    top += rc.bottom - rc.top;
+                }
+                else {
+                    top += 24; // fallback height if GetWindowRect fails
+                }
+            }
+            else {
+                top += 24; // fallback height if st->dtpH is null
+            }
             int listRight = rc.right - margin;
             int listBottom = (st->hClose ? (rc.bottom - (btnH + 2 * margin)) : (rc.bottom - margin));
-            SetWindowPos(st->hList, nullptr, margin, margin,
-                listRight - margin, listBottom - margin, SWP_NOZORDER);
+            SetWindowPos(st->hList, nullptr, margin, top, listRight - margin, max(0, listBottom - top), SWP_NOZORDER);
 
             // Optional: auto-size columns to header/content
             for (int i = 0; i < 4; ++i) {
@@ -1431,6 +1444,9 @@ struct ReportDatesState
     // New: combined view pieces
     HWND hList{};           // ListView with results
     bool listInit{ false };   // columns inserted once
+
+    // FIX: Add missing hClose member to match ReportAllState and resolve C2039
+    HWND hClose{}; // Add this line
 };
 
 // Fills the ListView with Morning/Evening/Overall averages in the given date range
@@ -1603,16 +1619,12 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
         DateTime_SetFormatW(st->hStart, L"yyyy-MM-dd");
         DateTime_SetFormatW(st->hEnd, L"yyyy-MM-dd");
 
-        st->hOk = CreateWindowExW(0, L"BUTTON", L"Refresh",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-            margin, 0, 80, 26, hWnd, (HMENU)IDOK, hInst, nullptr);
-
-        st->hCancel = CreateWindowExW(0, L"BUTTON", L"Close",
+        st->hClose = CreateWindowExW(0, L"BUTTON", L"Close",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             margin, 0, 80, 26, hWnd, (HMENU)IDCANCEL, hInst, nullptr);
 
         // Apply fonts
-        HWND cts[] = { st->hStart, st->hEnd, st->hOk, st->hCancel };
+        HWND cts[] = { st->hStart, st->hEnd, st->hClose };
         for (HWND c : cts) { if (c) SendMessageW(c, WM_SETFONT, (WPARAM)st->hFont, TRUE); }
 
         // Initialize dates to today
@@ -1663,11 +1675,16 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
         RECT rcClient;
         GetClientRect(hWnd, &rcClient);
         const int btnW = 80, btnH = 26;
-        if (st->hOk)     SetWindowPos(st->hOk, nullptr, rcClient.right - (btnW * 2 + margin * 2), rcClient.bottom - (btnH + margin), btnW, btnH, SWP_NOZORDER);
-        if (st->hCancel) SetWindowPos(st->hCancel, nullptr, rcClient.right - (btnW + margin), rcClient.bottom - (btnH + margin), btnW, btnH, SWP_NOZORDER);
-
-        // Initial data
-        FillDatesAveragesList(st->hList, st->stStart, st->stEnd);
+        if (st->hClose) {
+            SetWindowPos(st->hClose, nullptr, rcClient.right - (btnW + margin), rcClient.bottom - (btnH + margin),
+                btnW, btnH, SWP_NOZORDER);
+        }
+        if (st->hList) {
+            int listRight = rcClient.right - margin;
+            int listBottom = (st->hClose ? (rcClient.bottom - (btnH + 2 * margin)) : (rcClient.bottom - margin));
+            SetWindowPos(st->hList, nullptr, margin, margin,
+                listRight - margin, listBottom - margin, SWP_NOZORDER);
+        }
 
         CenterToOwner(hWnd, GetWindow(hWnd, GW_OWNER));
         EnsureWindowOnScreen(hWnd);
@@ -1686,14 +1703,18 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
         if (st->hEnd)   SetWindowPos(st->hEnd, nullptr, margin + 50 + 160 + 10 + 40, margin, 160, st->dtpH, SWP_NOZORDER);
 
         // Buttons bottom-right
-        if (st->hOk)     SetWindowPos(st->hOk, nullptr, rc.right - (btnW * 2 + margin * 2), rc.bottom - (btnH + margin), btnW, btnH, SWP_NOZORDER);
-        if (st->hCancel) SetWindowPos(st->hCancel, nullptr, rc.right - (btnW + margin), rc.bottom - (btnH + margin), btnW, btnH, SWP_NOZORDER);
-
-        // List fills remaining space
+        if (st->hClose) {
+            SetWindowPos(st->hClose, nullptr, rc.right - (btnW + margin), rc.bottom - (btnH + margin),
+                btnW, btnH, SWP_NOZORDER);
+        }
         if (st->hList) {
-            int top = margin * 2 + st->dtpH;
+            int top = margin * 2;
+
+            // st->dtpH is an int height, not a HWND. Use it directly.
+            top += (st->dtpH > 0 ? st->dtpH : 24);
+
             int listRight = rc.right - margin;
-            int listBottom = rc.bottom - (btnH + 2 * margin);
+            int listBottom = (st->hClose ? (rc.bottom - (btnH + 2 * margin)) : (rc.bottom - margin));
             SetWindowPos(st->hList, nullptr, margin, top, listRight - margin, max(0, listBottom - top), SWP_NOZORDER);
 
             for (int i = 0; i < 4; ++i) {
@@ -1735,8 +1756,11 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
 
     // Inside ReportDatesWndProc(...), add:
     case WM_KEYDOWN:
-        if (wParam == VK_RETURN) { SendMessageW(hWnd, WM_COMMAND, IDOK, 0); return 0; }
-        if (wParam == VK_ESCAPE) { SendMessageW(hWnd, WM_COMMAND, IDCANCEL, 0); return 0; }
+        if (wParam == VK_RETURN || wParam == VK_ESCAPE) {
+            // Simulate pressing the Close button
+            SendMessageW(hWnd, WM_COMMAND, IDCANCEL, 0);
+            return 0;
+        }
         break;
 
     case WM_COMMAND:
@@ -1815,4 +1839,29 @@ static void ShowReportDatesWindow(HWND owner)
     EnableWindow(owner, FALSE);
     ShowWindow(hWnd, SW_SHOW);
     UpdateWindow(hWnd);
+
+    // Modal-like pump so Enter/Esc work regardless of focused child
+    MSG msg;
+    while (IsWindow(hWnd) && GetMessageW(&msg, nullptr, 0, 0))
+    {
+        if (msg.message == WM_KEYDOWN &&
+            (msg.hwnd == hWnd || IsChild(hWnd, msg.hwnd)))
+        {
+            if (msg.wParam == VK_RETURN || msg.wParam == VK_ESCAPE) {
+                SendMessageW(hWnd, WM_COMMAND, IDCANCEL, 0);
+                continue;
+            }
+        }
+        if (!IsDialogMessageW(hWnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+
+    // Restore and activate owner
+    if (owner && IsWindow(owner)) {
+        EnableWindow(owner, TRUE);
+        ShowWindow(owner, SW_RESTORE);
+        SetForegroundWindow(owner);
+    }
 }
