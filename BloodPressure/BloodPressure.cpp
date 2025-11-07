@@ -86,6 +86,89 @@ static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
 static void ShowAddReadingDialog(HWND owner);
 static void ShowEditReadingDialog(HWND owner, const Reading& r);
 
+static int CompareSystemTimes(const SYSTEMTIME& a, const SYSTEMTIME& b)
+{
+    FILETIME fa{}, fb{};
+    SystemTimeToFileTime(&a, &fa);
+    SystemTimeToFileTime(&b, &fb);
+    return CompareFileTime(&fa, &fb); // <0 if a<b, 0 if equal, >0 if a>b
+}
+
+// Add near other helpers (after CompareSystemTimes)
+static std::wstring FormatYmd(const SYSTEMTIME& st)
+{
+    wchar_t buf[16];
+    swprintf_s(buf, L"%04u-%02u-%02u", st.wYear, st.wMonth, st.wDay);
+    return buf;
+}
+
+// Helpers to compute local time from UTC ISO and averages
+static bool TryParseUtcIsoToLocalTm(const std::wstring& isoUtc, std::tm& outLocal)
+{
+    int Y = 0, M = 0, D = 0, h = 0, m = 0, s = 0;
+    if (swscanf_s(isoUtc.c_str(), L"%d-%d-%dT%d:%d:%d", &Y, &M, &D, &h, &m, &s) != 6)
+        return false;
+
+    std::tm tmUtc{};
+    tmUtc.tm_year = Y - 1900;
+    tmUtc.tm_mon = M - 1;
+    tmUtc.tm_mday = D;
+    tmUtc.tm_hour = h;
+    tmUtc.tm_min = m;
+    tmUtc.tm_sec = s;
+
+    time_t t = _mkgmtime(&tmUtc);
+    if (t == (time_t)-1) return false;
+
+    std::tm tmLocal{};
+    if (localtime_s(&tmLocal, &t) != 0) return false;
+    outLocal = tmLocal;
+    return true;
+}
+
+static std::wstring LocalDateYmdFromUtcIso(const std::wstring& isoUtc)
+{
+    std::tm local{};
+    if (!TryParseUtcIsoToLocalTm(isoUtc, local)) return L"";
+    wchar_t buf[16]{};
+    if (wcsftime(buf, _countof(buf), L"%Y-%m-%d", &local) == 0) return L"";
+    return buf;
+}
+
+// Add near other helpers (after FormatYmd / LocalDateYmdFromUtcIso)
+static std::wstring BuildReportTitle(HWND owner, const wchar_t* fallback)
+{
+    // If this is the By Dates window, pull dates from its pickers.
+    HWND hStart = GetDlgItem(owner, IDC_DATES_START);
+    HWND hEnd = GetDlgItem(owner, IDC_DATES_END);
+    if (hStart && hEnd) {
+        SYSTEMTIME st{}, en{};
+        if (DateTime_GetSystemtime(hStart, &st) == GDT_VALID &&
+            DateTime_GetSystemtime(hEnd, &en) == GDT_VALID)
+        {
+            if (CompareSystemTimes(st, en) > 0) {
+                // normalize
+                en = st;
+            }
+            return L"By Dates: " + FormatYmd(st) + L" — " + FormatYmd(en);
+        }
+    }
+
+    // Otherwise, this is the Averages window: use oldest/newest reading dates if possible.
+    if (g_db) {
+        std::vector<Reading> readings;
+        if (g_db->GetAllReadings(readings) && !readings.empty()) {
+            const std::wstring newest = LocalDateYmdFromUtcIso(readings.front().tsUtc);
+            const std::wstring oldest = LocalDateYmdFromUtcIso(readings.back().tsUtc);
+            if (!newest.empty() && !oldest.empty()) {
+                return L"Averages: " + oldest + L" — " + newest;
+            }
+        }
+    }
+
+    return fallback ? fallback : L"Report";
+}
+
 static bool WriteUtf8File(const wchar_t* path, const std::wstring& text)
 {
     int needed = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), nullptr, 0, nullptr, nullptr);
@@ -141,7 +224,7 @@ static std::wstring CsvEscape(const std::wstring& v, wchar_t sep)
     return v;
 }
 
-// Save CSV exactly as shown in the ListView (do NOT split "Avg Sys/Avg Dia")
+// In SaveListViewAsCsv(...), prepend a title line before the header
 static bool SaveListViewAsCsv(HWND owner, HWND hList, const wchar_t* suggestedName, const wchar_t* dlgTitle)
 {
     if (!IsWindow(hList)) {
@@ -151,6 +234,11 @@ static bool SaveListViewAsCsv(HWND owner, HWND hList, const wchar_t* suggestedNa
 
     wchar_t sep = GetCsvSeparator();
     std::wstring output;
+
+    // Title
+    const std::wstring title = BuildReportTitle(owner, L"Report");
+    output.append(CsvEscape(title, sep));
+    output.push_back(L'\n');
 
     HWND hHeader = (HWND)SendMessageW(hList, LVM_GETHEADER, 0, 0);
     int colCount = hHeader ? (int)SendMessageW(hHeader, HDM_GETITEMCOUNT, 0, 0) : 0;
@@ -178,7 +266,7 @@ static bool SaveListViewAsCsv(HWND owner, HWND hList, const wchar_t* suggestedNa
         }
     }
 
-    // Save File dialog
+    // Save File dialog (unchanged) ...
     wchar_t file[MAX_PATH] = L"";
     wcsncpy_s(file, suggestedName, _TRUNCATE);
 
@@ -204,7 +292,7 @@ static bool SaveListViewAsCsv(HWND owner, HWND hList, const wchar_t* suggestedNa
     return true;
 }
 
-// Update Save dialog to prefer TSV (tab-separated) and keep UTF-8 with BOM
+// In SaveListViewAsText(...), prepend a title line before the header
 static bool SaveListViewAsText(HWND owner, HWND hList, const wchar_t* suggestedName, const wchar_t* dlgTitle)
 {
     if (!IsWindow(hList)) {
@@ -212,8 +300,12 @@ static bool SaveListViewAsText(HWND owner, HWND hList, const wchar_t* suggestedN
         return false;
     }
 
-    // Build text from ListView: header + rows (tab-separated)
+    // Build text from ListView: title + header + rows (tab-separated)
     std::wstring output;
+
+    // Title
+    output.append(BuildReportTitle(owner, L"Report"));
+    output.append(L"\r\n");
 
     HWND hHeader = (HWND)SendMessageW(hList, LVM_GETHEADER, 0, 0);
     int colCount = hHeader ? (int)SendMessageW(hHeader, HDM_GETITEMCOUNT, 0, 0) : 0;
@@ -241,7 +333,7 @@ static bool SaveListViewAsText(HWND owner, HWND hList, const wchar_t* suggestedN
         }
     }
 
-    // Save File dialog (prefer .tsv so apps split on tabs automatically)
+    // Save dialog/write (unchanged) ...
     wchar_t file[MAX_PATH] = L"";
     wcsncpy_s(file, suggestedName, _TRUNCATE);
 
@@ -257,7 +349,7 @@ static bool SaveListViewAsText(HWND owner, HWND hList, const wchar_t* suggestedN
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
     ofn.lpstrDefExt = L"tsv";
 
-    if (!GetSaveFileNameW(&ofn)) return false; // cancelled
+    if (!GetSaveFileNameW(&ofn)) return false;
 
     if (!WriteUtf8File(file, output)) {
         MessageBoxW(owner, L"Failed to write the file.", szTitle, MB_OK | MB_ICONERROR);
@@ -268,12 +360,16 @@ static bool SaveListViewAsText(HWND owner, HWND hList, const wchar_t* suggestedN
     return true;
 }
 
-// Add this helper near SaveListViewAsText
+// In CopyListViewAsTsvToClipboard(...), prepend a title line before the header
 static bool CopyListViewAsTsvToClipboard(HWND owner, HWND hList)
 {
     if (!IsWindow(hList)) return false;
 
     std::wstring output;
+
+    // Title
+    output.append(BuildReportTitle(owner, L"Report"));
+    output.append(L"\r\n");
 
     HWND hHeader = (HWND)SendMessageW(hList, LVM_GETHEADER, 0, 0);
     int colCount = hHeader ? (int)SendMessageW(hHeader, HDM_GETITEMCOUNT, 0, 0) : 0;
@@ -305,13 +401,13 @@ static bool CopyListViewAsTsvToClipboard(HWND owner, HWND hList)
     if (!hMem) return false;
 
     void* p = GlobalLock(hMem);
-    if (!p) { GlobalFree(hMem); return false; } // FIX: check for nullptr before memcpy
+    if (!p) { GlobalFree(hMem); return false; }
     memcpy(p, output.c_str(), bytes);
     GlobalUnlock(hMem);
 
     if (!OpenClipboard(owner)) { GlobalFree(hMem); return false; }
     EmptyClipboard();
-    SetClipboardData(CF_UNICODETEXT, hMem); // ownership passes to the clipboard
+    SetClipboardData(CF_UNICODETEXT, hMem);
     CloseClipboard();
     return true;
 }
@@ -596,30 +692,6 @@ static int IdealCtlHeightFromFont(HWND hwndRef, HFONT hFont, int minH = 28, int 
     return h;
 }
 
-// Helpers to compute local time from UTC ISO and averages
-static bool TryParseUtcIsoToLocalTm(const std::wstring& isoUtc, std::tm& outLocal)
-{
-    int Y=0,M=0,D=0,h=0,m=0,s=0;
-    if (swscanf_s(isoUtc.c_str(), L"%d-%d-%dT%d:%d:%d", &Y, &M, &D, &h, &m, &s) != 6)
-        return false;
-
-    std::tm tmUtc{};
-    tmUtc.tm_year = Y - 1900;
-    tmUtc.tm_mon  = M - 1;
-    tmUtc.tm_mday = D;
-    tmUtc.tm_hour = h;
-    tmUtc.tm_min  = m;
-    tmUtc.tm_sec  = s;
-
-    time_t t = _mkgmtime(&tmUtc);
-    if (t == (time_t)-1) return false;
-
-    std::tm tmLocal{};
-    if (localtime_s(&tmLocal, &t) != 0) return false;
-    outLocal = tmLocal;
-    return true;
-}
-
 static int RoundAvg(int sum, int count)
 {
     return (count > 0) ? (sum + (count / 2)) / count : 0; // integer round to nearest
@@ -661,31 +733,6 @@ static int DateKeyFromSystemTime(const SYSTEMTIME& s)
 static int DateKeyFromTm(const std::tm& t)
 {
     return (t.tm_year + 1900) * 10000 + (t.tm_mon + 1) * 100 + t.tm_mday;
-}
-
-static int CompareSystemTimes(const SYSTEMTIME& a, const SYSTEMTIME& b)
-{
-    FILETIME fa{}, fb{};
-    SystemTimeToFileTime(&a, &fa);
-    SystemTimeToFileTime(&b, &fb);
-    return CompareFileTime(&fa, &fb); // <0 if a<b, 0 if equal, >0 if a>b
-}
-
-// Add near other helpers (after CompareSystemTimes)
-static std::wstring FormatYmd(const SYSTEMTIME& st)
-{
-    wchar_t buf[16];
-    swprintf_s(buf, L"%04u-%02u-%02u", st.wYear, st.wMonth, st.wDay);
-    return buf;
-}
-
-static std::wstring LocalDateYmdFromUtcIso(const std::wstring& isoUtc)
-{
-    std::tm local{};
-    if (!TryParseUtcIsoToLocalTm(isoUtc, local)) return L"";
-    wchar_t buf[16]{};
-    if (wcsftime(buf, _countof(buf), L"%Y-%m-%d", &local) == 0) return L"";
-    return buf;
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
