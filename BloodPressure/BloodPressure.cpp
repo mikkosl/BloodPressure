@@ -150,7 +150,7 @@ static std::wstring BuildReportTitle(HWND owner, const wchar_t* fallback)
                 // normalize
                 en = st;
             }
-            return L"By Dates: " + FormatYmd(st) + L" — " + FormatYmd(en);
+            return L"Averages by Dates: " + FormatYmd(st) + L" — " + FormatYmd(en);
         }
     }
 
@@ -1817,10 +1817,10 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
             col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
 
             struct ColDef { const wchar_t* text; int width; int fmt; } cols[] = {
-                { L"Bucket",              160, LVCFMT_LEFT   },
+                { L"Time of day bucket",  160, LVCFMT_LEFT   },
                 { L"N",                    80, LVCFMT_RIGHT  },
-                { L"Avg Sys/Avg Dia",     120, LVCFMT_CENTER},
-                { L"Avg Pulse",           100, LVCFMT_RIGHT  },
+                { L"Sys/Dia",             120, LVCFMT_CENTER },
+                { L"Pulse",               100, LVCFMT_LEFT   },
             };
             for (int i = 0; i < (int)(sizeof(cols) / sizeof(cols[0])); ++i) {
                 col.pszText = const_cast<wchar_t*>(cols[i].text);
@@ -1851,7 +1851,7 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
                 int r = 0;
                 addRow(r++, L"Morning (00:00–11:59)", cntM, avgSysM, avgDiaM, avgPulM);
                 addRow(r++, L"Evening (12:00–23:59)", cntE, avgSysE, avgDiaE, avgPulE);
-                addRow(r++, L"Overall", cntO, avgSysO, avgDiaO, avgPulO);
+                addRow(r++, L"Overall averages", cntO, avgSysO, avgDiaO, avgPulO);
                 ListView_AutoSizeToHeaderAndContent(st->hList);
             }
             else if (st->hList) {
@@ -1983,7 +1983,7 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         }
         if (LOWORD(wParam) == IDC_REPORTALL_SAVE)
         {
-            if (st) SaveListViewAsCsv(hWnd, st->hList, L"Report_Averages.csv", L"Save Averages Report As");
+            if (st) SaveListViewAsText(hWnd, st->hList, L"Report_Averages.tsv", L"Save Averages Report As (TSV)");
             return 0;
         }
         if (LOWORD(wParam) == IDC_REPORTALL_PRINT)
@@ -2178,7 +2178,7 @@ static void FillDatesAveragesList(HWND hList, const SYSTEMTIME& stStart, const S
         int r = 0;
         addRow(r++, L"Morning (00:00–11:59)", cntM, avgSysM, avgDiaM, avgPulM);
         addRow(r++, L"Evening (12:00–23:59)", cntE, avgSysE, avgDiaE, avgPulE);
-        addRow(r++, L"Overall", cntO, avgSysO, avgDiaO, avgPulO);
+        addRow(r++, L"Overall averages", cntO, avgSysO, avgDiaO, avgPulO);
     }
 
     for (int i = 0; i < 4; ++i) {
@@ -2319,10 +2319,10 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             LVCOLUMNW col{};
             col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
             struct ColDef { const wchar_t* text; int width; int fmt; } cols[] = {
-                { L"Bucket",              160, LVCFMT_LEFT   },
+                { L"Time of day bucket",  160, LVCFMT_LEFT   },
                 { L"N",                    80, LVCFMT_RIGHT  },
-                { L"Avg Sys/Avg Dia",     120, LVCFMT_CENTER},
-                { L"Avg Pulse",           100, LVCFMT_RIGHT  },
+                { L"Sys/Dia",             120, LVCFMT_CENTER },
+                { L"Pulse",               100, LVCFMT_LEFT   },
             };
             for (int i = 0; i < (int)(sizeof(cols) / sizeof(cols[0])); ++i) {
                 col.pszText = const_cast<wchar_t*>(cols[i].text);
@@ -2500,7 +2500,7 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             return 0;
 
         case IDC_REPORTDATES_SAVE: // Save
-            if (st) SaveListViewAsCsv(hWnd, st->hList, L"Report_ByDates.csv", L"Save By Dates Report As");
+            if (st) SaveListViewAsText(hWnd, st->hList, L"Report_ByDates.tsv", L"Save By Dates Report As (TSV)");
             return 0;
         
         case IDC_REPORTDATES_PRINT: // Print
@@ -2511,7 +2511,7 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
                 if (CompareSystemTimes(st->stStart, st->stEnd) > 0) {
                     st->stEnd = st->stStart;
                 }
-                const std::wstring title = L"By Dates: " + FormatYmd(st->stStart) + L" — " + FormatYmd(st->stEnd);
+                const std::wstring title = L"Averages by Dates: " + FormatYmd(st->stStart) + L" — " + FormatYmd(st->stEnd);
                 PrintListView(hWnd, st->hList, title.c_str());
             }
             return 0;
@@ -2561,7 +2561,7 @@ static void ShowReportDatesWindow(HWND owner)
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
 
     HWND hWnd = CreateWindowExW(WS_EX_DLGMODALFRAME,
-        L"BP_ReportDatesWindow", L"Report - By Dates",
+        L"BP_ReportDatesWindow", L"Report - Averages by Dates",
         style,
         CW_USEDEFAULT, CW_USEDEFAULT, 620, 200,
         owner, nullptr, hInst, nullptr);
