@@ -671,6 +671,23 @@ static int CompareSystemTimes(const SYSTEMTIME& a, const SYSTEMTIME& b)
     return CompareFileTime(&fa, &fb); // <0 if a<b, 0 if equal, >0 if a>b
 }
 
+// Add near other helpers (after CompareSystemTimes)
+static std::wstring FormatYmd(const SYSTEMTIME& st)
+{
+    wchar_t buf[16];
+    swprintf_s(buf, L"%04u-%02u-%02u", st.wYear, st.wMonth, st.wDay);
+    return buf;
+}
+
+static std::wstring LocalDateYmdFromUtcIso(const std::wstring& isoUtc)
+{
+    std::tm local{};
+    if (!TryParseUtcIsoToLocalTm(isoUtc, local)) return L"";
+    wchar_t buf[16]{};
+    if (wcsftime(buf, _countof(buf), L"%Y-%m-%d", &local) == 0) return L"";
+    return buf;
+}
+
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
                      _In_ LPWSTR    lpCmdLine,
@@ -1894,7 +1911,22 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         }
         if (LOWORD(wParam) == IDC_REPORTALL_PRINT)
         {
-            if (st) PrintListView(hWnd, st->hList, L"Report - Averages");
+            if (st) {
+                std::wstring title = L"Averages";
+                // If possible, include first/last dates
+                if (g_db) {
+                    std::vector<Reading> readings;
+                    if (g_db->GetAllReadings(readings) && !readings.empty()) {
+                        // GetAllReadings is ordered by timestamp desc -> front=newest, back=oldest
+                        const std::wstring newest = LocalDateYmdFromUtcIso(readings.front().tsUtc);
+                        const std::wstring oldest = LocalDateYmdFromUtcIso(readings.back().tsUtc);
+                        if (!newest.empty() && !oldest.empty()) {
+                            title = L"Averages: " + oldest + L" — " + newest;
+                        }
+                    }
+                }
+                PrintListView(hWnd, st->hList, title.c_str());
+            }
             return 0;
         }
         break;
@@ -2391,7 +2423,16 @@ static LRESULT CALLBACK ReportDatesWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             return 0;
         
         case IDC_REPORTDATES_PRINT: // Print
-            if (st) PrintListView(hWnd, st->hList, L"Report - By Dates");
+            if (st) {
+                // Ensure current values are synced and ordered
+                DateTime_GetSystemtime(st->hStart, &st->stStart);
+                DateTime_GetSystemtime(st->hEnd, &st->stEnd);
+                if (CompareSystemTimes(st->stStart, st->stEnd) > 0) {
+                    st->stEnd = st->stStart;
+                }
+                const std::wstring title = L"By Dates: " + FormatYmd(st->stStart) + L" — " + FormatYmd(st->stEnd);
+                PrintListView(hWnd, st->hList, title.c_str());
+            }
             return 0;
         }
         break;
