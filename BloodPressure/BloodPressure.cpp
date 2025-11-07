@@ -617,15 +617,15 @@ static void ShowGettingStarted(HWND owner)
     const wchar_t* msg =
         L"Getting Started\n"
         L"\n"
-        L"1) File -> Create DB to create a new database, or File -> Open DB to open an existing one.\n"
-        L"2) Reading -> Add to enter your first blood pressure reading.\n"
-        L"3) Use PageUp/PageDown to navigate pages.\n"
-        L"4) Right-click the main window for a quick context menu.\n"
-        L"5) Reports -> Averages and Reports -> By Dates to view summaries.\n"
-        L"\n"
-        L"Tips:\n"
-        L"- In the By Dates report, press Enter or Esc to close the window.\n"
-        L"- Use the Close button at bottom-right to dismiss report windows.";
+        L"1) File -> Create DB or File -> Open DB to begin.\n"
+        L"2) Reading -> Add to enter a blood pressure reading.\n"
+        L"3) Use PageUp/PageDown or the Page menu items to navigate pages.\n"
+        L"4) Reports -> Averages and Reports -> Averages by Dates for summary tables.\n"
+        L"5) In report windows: Ctrl+C copies as TSV, Save... writes a UTF-8 .tsv file, Print... prints.\n"
+        L"6) Enter or Esc closes report windows and dialogs (unless a multi-line edit has focus).\n"
+        L"7) Right-click the main window for a context menu.\n"
+        L"8) File -> Delete ALL Readings permanently removes all data (no undo).\n"
+        L"9) Press F1 anytime to view this guide.\n";
     MessageBoxW(owner, msg, L"Getting Started", MB_OK | MB_ICONINFORMATION);
 }
 
@@ -1055,20 +1055,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 // No DB open yet: show a friendly hint
                 const wchar_t* msg1 = L"No database is open.";
                 const wchar_t* msg2 = L"Use File -> Create DB or File -> Open DB to begin.";
-                const wchar_t* gs1 = L"Getting Started:";
-                const wchar_t* gs2 = L"1) Create/Open a DB, then use Reading -> Add to enter a reading.";
-                const wchar_t* gs3 = L"2) PageUp/PageDown to navigate pages.";
-                const wchar_t* gs4 = L"3) Reports -> Averages / By Dates for summaries.";
-                const wchar_t* gs5 = L"4) Press F1 anytime to view these steps.";
 
                 TextOutW(hdc, 10, y, msg1, lstrlenW(msg1)); y += 17;
                 TextOutW(hdc, 10, y, msg2, lstrlenW(msg2)); y += 25;
-
-                TextOutW(hdc, 10, y, gs1, lstrlenW(gs1)); y += 17;
-                TextOutW(hdc, 20, y, gs2, lstrlenW(gs2)); y += 17;
-                TextOutW(hdc, 20, y, gs3, lstrlenW(gs3)); y += 17;
-                TextOutW(hdc, 20, y, gs4, lstrlenW(gs4)); y += 17;
-                TextOutW(hdc, 20, y, gs5, lstrlenW(gs5)); y += 17;
             }
 
             EndPaint(hWnd, &ps);
