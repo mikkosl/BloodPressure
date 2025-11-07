@@ -1667,6 +1667,7 @@ struct ReportAllState
     HWND dtpH{};     // <-- Add this line to fix C2039 error
     HWND hSave{}; // <-- Save button
     HWND hPrint{}; // <-- Print button
+    HWND hRange{};   // <-- NEW: static label showing date range (oldest — newest)
 };
 
 // ------------------------------
@@ -1781,6 +1782,20 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
         if (st->hPrint) {
             SendMessageW(st->hPrint, WM_SETFONT, (WPARAM)st->hFont, TRUE);
             ShowWindow(st->hPrint, SW_SHOW);
+        }
+
+        // Date range (oldest — newest) title label
+        std::wstring rangeText = BuildReportTitle(hWnd, L"Averages");
+        st->hRange = CreateWindowExW(0, L"STATIC", rangeText.c_str(),
+            WS_CHILD | WS_VISIBLE,
+            margin, margin, 600, 24, hWnd, nullptr, hInst, nullptr);
+        if (st->hRange) {
+            SendMessageW(st->hRange, WM_SETFONT, (WPARAM)st->hFont, TRUE);
+        }
+        int rangeH = 0;
+        if (st->hRange) {
+            RECT r{}; GetWindowRect(st->hRange, &r);
+            rangeH = r.bottom - r.top;
         }
 
         // ListView (table) for the averages
@@ -1902,34 +1917,49 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
     }
     break;
 
+    // (3) In WM_SIZE handler of ReportAllWndProc, adjust layout to include hRange
     case WM_SIZE:
     {
         if (!st) break;
-        RECT rc{};
+        RECT rc{}; 
         GetClientRect(hWnd, &rc);
         const int margin = 10;
         const int btnW = 80, btnH = 26;
+
+        // Reposition range label
+        int rangeH = 0;
+        if (st->hRange) {
+            // Keep it top-left
+            SetWindowPos(st->hRange, nullptr, margin, margin, rc.right - 2 * margin, 24, SWP_NOZORDER);
+            RECT rr{}; GetWindowRect(st->hRange, &rr);
+            rangeH = (rr.bottom - rr.top);
+        }
+
         if (st->hClose) {
-            SetWindowPos(st->hClose, nullptr, rc.right - (btnW + margin), rc.bottom - (btnH + margin),
+            SetWindowPos(st->hClose, nullptr,
+                rc.right - (btnW + margin), rc.bottom - (btnH + margin),
                 btnW, btnH, SWP_NOZORDER);
         }
         if (st->hSave) {
             int xClose = rc.right - (btnW + margin);
-            SetWindowPos(st->hSave, nullptr, xClose - (btnW + margin), rc.bottom - (btnH + margin),
+            SetWindowPos(st->hSave, nullptr,
+                xClose - (btnW + margin), rc.bottom - (btnH + margin),
                 btnW, btnH, SWP_NOZORDER);
         }
         if (st->hPrint) {
             int xSave = rc.right - (2 * (btnW + margin));
-            SetWindowPos(st->hPrint, nullptr, xSave - (btnW + margin), rc.bottom - (btnH + margin),
+            SetWindowPos(st->hPrint, nullptr,
+                xSave - (btnW + margin), rc.bottom - (btnH + margin),
                 btnW, btnH, SWP_NOZORDER);
         }
         if (st->hList) {
-            int top = margin * 2;
-            top += 24; // simple top offset; no DTPs in this window
-            int listRight = rc.right - margin;
+            int top = margin + rangeH + 4;              // below label
             int listBottom = (st->hClose ? (rc.bottom - (btnH + 2 * margin)) : (rc.bottom - margin));
-            SetWindowPos(st->hList, nullptr, margin, top, listRight - margin, max(0, listBottom - top), SWP_NOZORDER);
-
+            SetWindowPos(st->hList, nullptr,
+                margin, top,
+                rc.right - 2 * margin,
+                max(0, listBottom - top),
+                SWP_NOZORDER);
             ListView_AutoSizeToHeaderAndContent(st->hList);
         }
     }
@@ -1971,6 +2001,10 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
                             title = L"Averages: " + oldest + L" — " + newest;
                         }
                     }
+                }
+                if (st->hRange) {
+                    std::wstring refreshed = BuildReportTitle(hWnd, L"Averages");
+                    SetWindowTextW(st->hRange, refreshed.c_str());
                 }
                 PrintListView(hWnd, st->hList, title.c_str());
             }
