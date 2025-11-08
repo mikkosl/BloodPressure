@@ -789,11 +789,27 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 MessageBoxW(hWnd, L"All readings deleted.", szTitle, MB_OK | MB_ICONINFORMATION);
                 break;
             case IDM_ADD:
+            {
+                if (!g_db) {
+                    MessageBoxW(hWnd,
+                        L"No database is currently open.\nUse File -> Create DB or File -> Open DB to begin.",
+                        szTitle, MB_OK | MB_ICONINFORMATION);
+                    break;
+                }
                 ShowAddReadingDialog(hWnd);
                 InvalidateRect(hWnd, nullptr, TRUE);
+            }
                 break;
             case IDM_EDIT:
             {
+                // Warn if no database open
+                if (!g_db) {
+                    MessageBoxW(hWnd,
+                        L"No database is currently open.\nUse File -> Create DB or File -> Open DB to begin.",
+                        szTitle, MB_OK | MB_ICONINFORMATION);
+                    break; // do not open edit dialog
+                }
+
                 // Open edit dialog in "picker" mode (no preselected reading)
                 Reading r{};
                 ShowEditReadingDialog(hWnd, r);
@@ -954,7 +970,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             else
             {
                 // No DB open yet: show a friendly hint
-                const wchar_t* msg1 = L"No database is open.";
+                const wchar_t* msg1 = L"No database is currently open.";
                 const wchar_t* msg2 = L"Use File -> Create DB or File -> Open DB to begin.";
 
                 TextOutW(hdc, 10, y, msg1, lstrlenW(msg1)); y += 17;
@@ -1590,7 +1606,7 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
 
         st->lines.clear();
         if (!g_db) {
-            st->lines.push_back(L"No database is open.");
+            st->lines.push_back(L"No database is currently open.");
         }
         else {
             int totalCount = 0;
@@ -1746,7 +1762,7 @@ static LRESULT CALLBACK ReportAllWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPA
                 it.mask = LVIF_TEXT;
                 it.iItem = 0;
                 it.iSubItem = 0;
-                it.pszText = const_cast<wchar_t*>(L"No data");
+                it.pszText = const_cast<wchar_t*>(L"No database is currently open.");
                 ListView_InsertItemW(st->hList, &it);
                 ListView_AutoSizeToHeaderAndContent(st->hList);
             }
@@ -1991,7 +2007,7 @@ static void FillDatesAveragesList(HWND hList, const SYSTEMTIME& stStart, const S
 
     if (!g_db) {
         LVITEMW it{}; it.mask = LVIF_TEXT; it.iItem = 0;
-        it.pszText = const_cast<wchar_t*>(L"No database is open.");
+        it.pszText = const_cast<wchar_t*>(L"No database is currently open.");
         ListView_InsertItemW(hList, &it);
         return;
     }
