@@ -521,11 +521,11 @@ static void ShowGettingStarted(HWND owner)
         L"1) File -> Create DB or File -> Open DB to begin.\n"
         L"2) Reading -> Add to enter a blood pressure reading.\n"
         L"3) Use PageUp/PageDown or the Page menu items to navigate pages.\n"
-        L"4) Reports -> Averages and Reports -> Averages by Dates for summary tables.\n"
+        L"4) Report -> All and Report -> Dates for summary tables.\n"
         L"5) In report windows: Ctrl+C copies as TSV, Save... writes a UTF-8 .tsv file, Print... prints.\n"
         L"6) Enter or Esc closes report windows and dialogs (unless a multi-line edit has focus).\n"
         L"7) Right-click the main window for a context menu.\n"
-        L"8) File -> Delete ALL Readings permanently removes all data (no undo).\n"
+        L"8) Reading -> Delete ALL permanently removes all data (no undo).\n"
         L"9) Press F1 anytime to view this guide.\n";
     MessageBoxW(owner, msg, L"Getting Started", MB_OK | MB_ICONINFORMATION);
 }
