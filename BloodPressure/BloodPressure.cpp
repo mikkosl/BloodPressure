@@ -193,105 +193,6 @@ static bool WriteUtf8File(const wchar_t* path, const std::wstring& text)
     return ok && written == bytes.size();
 }
 
-// Locale-aware CSV list separator (Excel honors this)
-static wchar_t GetCsvSeparator()
-{
-    wchar_t sep = L',';
-    wchar_t ls[8] = L"";
-    int n = GetLocaleInfoW(LOCALE_USER_DEFAULT, LOCALE_SLIST, ls, (int)_countof(ls));
-    if (n > 1 && ls[0]) sep = ls[0];
-    return sep;
-}
-
-// Escape per RFC 4180: wrap if contains sep, quotes, or CR/LF; double the quotes.
-static std::wstring CsvEscape(const std::wstring& v, wchar_t sep)
-{
-    if (v.find(sep) != std::wstring::npos ||
-        v.find(L'"') != std::wstring::npos ||
-        v.find(L'\r') != std::wstring::npos ||
-        v.find(L'\n') != std::wstring::npos)
-    {
-        std::wstring out;
-        out.reserve(v.size() + 2);
-        out.push_back(L'"');
-        for (wchar_t ch : v) {
-            if (ch == L'"') out.push_back(L'"');
-            out.push_back(ch);
-        }
-        out.push_back(L'"');
-        return out;
-    }
-    return v;
-}
-
-// In SaveListViewAsCsv(...), prepend a title line before the header
-static bool SaveListViewAsCsv(HWND owner, HWND hList, const wchar_t* suggestedName, const wchar_t* dlgTitle)
-{
-    if (!IsWindow(hList)) {
-        MessageBoxW(owner, L"Report view is not available.", szTitle, MB_OK | MB_ICONERROR);
-        return false;
-    }
-
-    wchar_t sep = GetCsvSeparator();
-    std::wstring output;
-
-    // Title
-    const std::wstring title = BuildReportTitle(owner, L"Report");
-    output.append(CsvEscape(title, sep));
-    output.push_back(L'\n');
-
-    HWND hHeader = (HWND)SendMessageW(hList, LVM_GETHEADER, 0, 0);
-    int colCount = hHeader ? (int)SendMessageW(hHeader, HDM_GETITEMCOUNT, 0, 0) : 0;
-    if (colCount <= 0) colCount = 1;
-
-    // Header
-    for (int c = 0; c < colCount; ++c) {
-        HDITEMW hd{}; hd.mask = HDI_TEXT;
-        wchar_t hbuf[128] = L"";
-        hd.pszText = hbuf; hd.cchTextMax = (int)_countof(hbuf);
-        if (hHeader) SendMessageW(hHeader, HDM_GETITEMW, (WPARAM)c, (LPARAM)&hd);
-        output.append(CsvEscape(hbuf, sep));
-        output.push_back(c + 1 < colCount ? sep : L'\n');
-    }
-
-    // Rows
-    int rowCount = (int)SendMessageW(hList, LVM_GETITEMCOUNT, 0, 0);
-    for (int r = 0; r < rowCount; ++r) {
-        for (int c = 0; c < colCount; ++c) {
-            wchar_t buf[512] = L"";
-            LVITEMW it{}; it.iSubItem = c; it.pszText = buf; it.cchTextMax = (int)_countof(buf);
-            SendMessageW(hList, LVM_GETITEMTEXTW, (WPARAM)r, (LPARAM)&it);
-            output.append(CsvEscape(buf, sep));
-            output.push_back(c + 1 < colCount ? sep : L'\n');
-        }
-    }
-
-    // Save File dialog (unchanged) ...
-    wchar_t file[MAX_PATH] = L"";
-    wcsncpy_s(file, suggestedName, _TRUNCATE);
-
-    OPENFILENAMEW ofn{}; ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = owner;
-    ofn.lpstrFilter =
-        L"CSV (Comma/Locale separated) (*.csv)\0*.csv\0"
-        L"All Files (*.*)\0*.*\0";
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = (DWORD)_countof(file);
-    ofn.lpstrTitle = dlgTitle;
-    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
-    ofn.lpstrDefExt = L"csv";
-
-    if (!GetSaveFileNameW(&ofn)) return false; // cancelled
-
-    if (!WriteUtf8File(file, output)) {
-        MessageBoxW(owner, L"Failed to write the file.", szTitle, MB_OK | MB_ICONERROR);
-        return false;
-    }
-
-    MessageBoxW(owner, L"Report saved.", szTitle, MB_OK | MB_ICONINFORMATION);
-    return true;
-}
-
 // In SaveListViewAsText(...), prepend a title line before the header
 static bool SaveListViewAsText(HWND owner, HWND hList, const wchar_t* suggestedName, const wchar_t* dlgTitle)
 {
@@ -1121,7 +1022,6 @@ struct AddReadingState
     HFONT hFont{};
     bool editMode{};
     int editId{};
-    int result{-1};
 
     // Row picker (edit mode without preselected row)
     HWND hRowCombo{};
@@ -1416,7 +1316,6 @@ static LRESULT CALLBACK AddReadingWndProc(HWND hWnd, UINT msg, WPARAM wParam, LP
             delete st;
         }
         return 0;
-        InvalidateRect(hWnd, nullptr, TRUE);
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
@@ -1653,7 +1552,6 @@ struct ReportAllState
     HWND hList{};    // ListView (table)
     HWND hClose{};   // Close button
     std::vector<std::wstring> lines; // fallback text to paint (no data)
-    HWND dtpH{};     // <-- Add this line to fix C2039 error
     HWND hSave{}; // <-- Save button
     HWND hPrint{}; // <-- Print button
     HWND hRange{};   // <-- NEW: static label showing date range (oldest — newest)
@@ -2067,8 +1965,6 @@ struct ReportDatesState
     bool ownsFont{};
     HWND hStart{};
     HWND hEnd{};
-    HWND hOk{};
-    HWND hCancel{};
     SYSTEMTIME stStart{};
     SYSTEMTIME stEnd{};
     int dtpH{24}; // <-- ideal height for DateTime pickers
